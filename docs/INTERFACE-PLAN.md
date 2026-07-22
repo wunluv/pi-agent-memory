@@ -13,9 +13,10 @@ Phase 2 adds two capability bundles:
 | Bundle | New Tools | New Commands | Interface Mods |
 |--------|-----------|-------------|----------------|
 | Memory Server Sync | 1 | 1 | 2 |
+| Agent Identity | 0 | 0 | 1 |
 | Auto-Discover Org Memory | 0 | 0 | 1 |
 
-**Total: 1 new tool, 1 new command, 3 interface modifications.**
+**Total: 1 new tool, 1 new command, 4 interface modifications.**
 
 Nothing is removed or broken. Phase 1 tools and commands are unchanged.
 
@@ -100,6 +101,23 @@ New: git commit → check SyncPolicy → conditionally push → return to agent.
 | **migration** | Default config has `push_on_write=false` — zero behavior change. Only agents that opt in via `memory_sync_config` get auto-push. |
 | **output shape** | Unchanged. Push status is informational text appended to the write result, not a structural change to the response. |
 
+#### Agent Identity in Commits and Frontmatter
+
+```
+Current: commits use generic "Agent Memory <agent-memory@pi>".
+         Frontmatter has no agent attribution.
+New: commits use agent UUID. Frontmatter auto-includes agent_id.
+```
+
+| Aspect | Detail |
+|--------|--------|
+| **UUID origin** | Generated at `/agent:init`. Stored in `<agent-dir>/agent.json`: `{ "id": "<uuid-v4>", "name": "alph" }`. Persistent, immutable. |
+| **commit author** | `git config user.name "agent-<short-uuid>"` and `user.email "agent-<short-uuid>@pi"` on repo init. Short UUID = first 8 chars. Commit messages unchanged (still `<path>: <description>`). |
+| **frontmatter** | `memory_write` auto-adds `agent_id: "<full-uuid>"` to generated frontmatter. Immutable — set on first write, preserved on subsequent writes to same file. |
+| **runtime tracking** | Extension loads agent UUID on startup from `agent.json`. Falls back to "unknown" for agents created before this change. |
+| **migration** | Existing agents (no `agent.json`) get `agent_id: "unknown"` in frontmatter. New commits still use old author until agent is re-initialized. Non-breaking — just less specific. |
+| **multi-agent visibility** | `memory_read` exposes `agent_id` from frontmatter. `git log` shows which agent committed. The building block for audit, routing, and handoff in Phase 3. |
+
 #### `session_start` hook — Auto-Pull
 
 ```
@@ -148,6 +166,7 @@ COMMANDS (1 new):
 BEHAVIOR CHANGES (invisible to agent):
   - memory_write may push after commit (if configured)
   - Session start may pull from server (if configured)
+  - All commits tagged with agent UUID (author + frontmatter)
   - memory_tree/read/write/search auto-discover .memory/ when cwd is in a project
 ```
 
@@ -207,7 +226,7 @@ No new dependencies between tools. Everything depends on config files or existin
 
 ## Human Review Checklist (Gate 2 — Trimmed)
 
-- [ ] 1 tool + 1 command + 4 mods — does this feel like the right surface area?
+- [ ] 1 tool + 1 command + 4 mods — right surface area?
 - [ ] `memory_sync_config` handles both get and set in one tool — too clever or clean?
 - [ ] `/agent:pull` list mode (query server for available agents) — does `pi-agent-memory-server` have a `/v1/agents` endpoint yet, or does this create a dependency?
 - [ ] Auto-discover on by default — correct call?
@@ -220,14 +239,17 @@ No new dependencies between tools. Everything depends on config files or existin
 
 | # | What | Effort |
 |---|------|--------|
-| 1 | `.sync-policy.json` read/write helper | Tiny |
-| 2 | `memory_sync_config` tool | Small |
-| 3 | `memory_write` post-commit push | Small |
-| 4 | `session_start` auto-pull | Small |
-| 5 | `resolveMemoryRoot` auto-discover | Small |
-| 6 | `/agent:pull` command | Medium (server API dependency) |
+| 1 | Agent UUID: `/agent:init` generates + persists `agent.json` | Tiny |
+| 2 | Agent UUID: runtime loads UUID, uses in git config + frontmatter | Tiny |
+| 3 | `.sync-policy.json` read/write helper | Tiny |
+| 4 | `memory_sync_config` tool | Small |
+| 4 | Agent UUID in commits and frontmatter | Small |
+| 5 | `memory_write` post-commit push | Small |
+| 6 | `session_start` auto-pull | Small |
+| 7 | `resolveMemoryRoot` auto-discover | Small |
+| 8 | `/agent:pull` command | Medium (server API dependency) |
 
-Items 1-5 can ship as a unit (server sync without the bootstrap command). Item 6 depends on `pi-agent-memory-server` having a list endpoint, but can be built simultaneously.
+Items 1-7 can ship as a unit. Item 8 depends on `pi-agent-memory-server` having a list endpoint, but can be built simultaneously.
 
 ---
 
