@@ -12,6 +12,26 @@
 6. HUMAN IN THE LOOP — Human provides taste: reviews data models, defines interfaces, says no, deletes.
 7. WRITE FOR HUMANS — Comments explain WHY, not WHAT. Surface non-obvious decisions.
 
+## GitHub Workflow
+
+Issue-driven. Every change starts as a GitHub issue (template in `.github/ISSUE_TEMPLATE/`). An issue is a prompt — it states the desired outcome and enough context for an agent to execute without asking what you meant. Open issues are the source of truth; work in issue order unless dependencies say otherwise.
+
+**Tiers** (labels):
+
+- **routine** — fixes, small enhancements → commit straight to `main`
+- **serious** — core logic, data model, templates, public interface, high-risk changes → branch + PR, San reviews
+- **phase-2** — feature tagged from the design spec (see `docs/IMPROVEMENT-DRAFTS.md`)
+
+**Loop (all tiers):**
+
+1. **Create issue:** `gh issue create` — problem, proposed solution, risk tier, test plan
+2. **Implement** in atomic commits (one intent each)
+3. **Comment** on the issue for decisions; discuss with San when needed
+4. **Test** where applicable: `node --check`, dry-runs, curl API checks
+5. **Push:** `git push origin main` (routine) or open a PR referencing the issue (serious)
+6. **Deploy:** this extension is consumed via symlink (`~/.pi/agent/extensions/pi-agent-memory` → this tree), so the working tree IS the live code; changes take effect on next pi restart
+7. **Close issue** with fix ref: `gh issue close <n> -c "Fixed in <short-hash>"`
+
 ## Session Start
 
 1. `git status --short` — flag uncommitted changes
