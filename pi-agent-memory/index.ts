@@ -82,6 +82,63 @@ function getSystemDir(): string | null {
 	return root ? path.join(root, "system") : null;
 }
 
+/** True if the token looks like a filesystem path rather than a bare name. */
+function isPathLike(input: string): boolean {
+	return (
+		input === "." ||
+		input === ".." ||
+		input.startsWith("/") ||
+		input.startsWith("~") ||
+		input.startsWith(".") ||
+		input.includes("/") ||
+		input.includes("\\")
+	);
+}
+
+interface ProjectEntry {
+	name: string;
+	path: string;
+}
+
+/**
+ * Look up a project by name in system/projects.md. Matches the "**Name**"
+ * header exactly (case-insensitive), then reads the first path-looking backtick
+ * token on a continuation line. Does NOT substring-match over prose — the
+ * caller must exclude path-like inputs first (see isPathLike).
+ */
+function findProjectEntry(name: string): ProjectEntry | null {
+	const agentRoot = getAgentMemoryRoot();
+	if (!agentRoot) return null;
+	const projectsFile = path.join(agentRoot, "system", "projects.md");
+	if (!fs.existsSync(projectsFile)) return null;
+
+	const body = parseFrontmatter(fs.readFileSync(projectsFile, "utf-8")).body;
+	const target = name.toLowerCase();
+
+	let current: ProjectEntry | null = null;
+
+	for (const line of body.split("\n")) {
+		// A new project entry begins with "- **Name**"
+		const headerMatch = line.match(/^\s*-\s*\*\*(.+?)\*\*/);
+		if (headerMatch) {
+			if (current && current.name.toLowerCase() === target) return current;
+			current = { name: headerMatch[1].split("/")[0].trim(), path: "" };
+			continue;
+		}
+		// First path-looking backtick token on a continuation line under the entry
+		if (current && !current.path) {
+			const pathMatch = line.match(/`([^`]+)`/);
+			if (pathMatch) {
+				const p = pathMatch[1].replace(/^~/, os.homedir());
+				if (p.includes("/") || p.includes("\\")) current.path = p;
+			}
+		}
+	}
+
+	if (current && current.name.toLowerCase() === target) return current;
+	return null;
+}
+
 /** Recursively collect all .md file paths under a directory */
 function collectMdFiles(dir: string): string[] {
 	const results: string[] = [];
@@ -1005,34 +1062,13 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			let memoryPath = path.join(resolvedPath, ".memory");
 
-			// If .memory/ doesn't exist at the path, try looking up project name
-			// from global agent memory's system/projects.md
-			if (!fs.existsSync(memoryPath)) {
-				const agentRoot = getAgentMemoryRoot();
-				if (agentRoot) {
-					const projectsFile = path.join(agentRoot, "system", "projects.md");
-					if (fs.existsSync(projectsFile)) {
-						const content = fs.readFileSync(projectsFile, "utf-8");
-						const fm = parseFrontmatter(content);
-						// Search for the project name in the body
-						const lines = fm.body.split("\n");
-						for (const line of lines) {
-							const trimmed = line.trim();
-							if (trimmed.toLowerCase().includes(input.toLowerCase())) {
-								// Try to extract a path from the line
-								const pathMatch = trimmed.match(/`([^`]+)`/);
-								if (pathMatch) {
-									const candidatePath = pathMatch[1].replace(/^~/, os.homedir());
-									const candidateMemory = path.join(candidatePath, ".memory");
-									if (fs.existsSync(candidateMemory)) {
-										resolvedPath = candidatePath;
-										memoryPath = candidateMemory;
-										break;
-									}
-								}
-							}
-						}
-					}
+			// If .memory/ doesn't exist at the path, and the input is a bare
+			// project name (not a path), look it up in system/projects.md.
+			if (!fs.existsSync(memoryPath) && !isPathLike(input)) {
+				const entry = findProjectEntry(input);
+				if (entry) {
+					resolvedPath = entry.path;
+					memoryPath = path.join(entry.path, ".memory");
 				}
 			}
 
