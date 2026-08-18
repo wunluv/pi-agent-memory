@@ -131,14 +131,14 @@ export function rankedSearch(
     const rel = path.relative(root, f);
     const content = fs.readFileSync(f, "utf-8");
     const fm = parseFrontmatter(content);
-    // The path IS the subject taxonomy, and description is a curated summary —
-    // both are strong signals. Tokenize body + description + path (path 2×).
-    const pathText = rel.replace(/\.md$/, "").replace(/[\/\\]+/g, " ");
+    // Structure (directory path) is for browsing, not search — a folder name is
+    // a known, not relevance evidence. Rank on content: body + curated
+    // description + filename (a semi-semantic title). No directory-path terms.
+    const filename = path.basename(rel).replace(/\.md$/, "");
     const tokens = [
       ...tokenize(fm.body),
       ...tokenize(fm.description),
-      ...tokenize(pathText),
-      ...tokenize(pathText),
+      ...tokenize(filename),
     ].map(stem);
     return {
       rel,
