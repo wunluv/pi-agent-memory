@@ -94,7 +94,7 @@ export interface SearchHit {
 export interface RankedSearchOptions {
   topN?: number;           // default 10
   recencyHalfLife?: number; // days; default 180
-  fuzzy?: boolean;         // expand query with near-miss vocab; default true
+  fuzzy?: boolean;         // expand query with near-miss vocab; default false
   fuzzyMaxDist?: number;   // default 2
 }
 
@@ -121,7 +121,7 @@ export function rankedSearch(
   const { collectMdFiles, parseFrontmatter } = deps;
   const topN = opts.topN ?? 10;
   const recencyHalfLife = opts.recencyHalfLife ?? 180;
-  const fuzzy = opts.fuzzy ?? true;
+  const fuzzy = opts.fuzzy ?? false;
   const fuzzyMaxDist = opts.fuzzyMaxDist ?? 2;
 
   const files = collectMdFiles(root);
