@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as cp from "node:child_process";
+import { rankedSearch } from "./ranked-search";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -350,39 +351,6 @@ function isGitRepo(repoPath: string): boolean {
 	return fs.existsSync(path.join(repoPath, ".git"));
 }
 
-// ─── Memory Search ────────────────────────────────────────────────────────────────
-
-function memoryFileSearch(query: string, root: string): string {
-	const mdFiles = collectMdFiles(root);
-	if (mdFiles.length === 0) return "No memory files found.";
-
-	const queryLower = query.toLowerCase();
-	const results: Array<{ file: string; line: number; text: string }> = [];
-
-	for (const filePath of mdFiles) {
-		const relPath = path.relative(root, filePath);
-		try {
-			const content = fs.readFileSync(filePath, "utf-8");
-			const lines = content.split("\n");
-			for (let i = 0; i < lines.length; i++) {
-				if (lines[i].toLowerCase().includes(queryLower)) {
-					const trimmed = lines[i].trim();
-					const display = trimmed.length > 150 ? trimmed.slice(0, 150) + "..." : trimmed;
-					results.push({ file: relPath, line: i + 1, text: display });
-					if (results.length >= 10) break;
-				}
-			}
-		} catch {
-			// skip unreadable files
-		}
-		if (results.length >= 10) break;
-	}
-
-	if (results.length === 0) return "No matches found.";
-
-	return results.map((r) => `${r.file}:${r.line}: ${r.text}`).join("\n");
-}
-
 /** Search session history */
 function searchSessions(query: string): string {
 	if (!fs.existsSync(SESSIONS_DIR)) return "No session history found.";
@@ -631,8 +599,8 @@ export default function (pi: ExtensionAPI) {
 		name: "memory_search",
 		label: "Memory Search",
 		description:
-			"Full-text search across all memory files. Searches file contents including frontmatter. Returns matching lines with file paths. Limited to 10 matches.",
-		promptSnippet: "Full-text search across all memory files",
+			"Ranked full-text search (BM25 + importance/recency boosts) across all memory files. Returns top matches with snippets and scores.",
+		promptSnippet: "Ranked full-text search across memory files",
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),
 			root: Type.Optional(
@@ -647,10 +615,19 @@ export default function (pi: ExtensionAPI) {
 					details: {},
 				};
 			}
-			const result = memoryFileSearch(params.query, root);
+			const hits = rankedSearch(params.query, root, { collectMdFiles, parseFrontmatter }, { topN: 10 });
+			if (hits.length === 0) {
+				return {
+					content: [{ type: "text", text: "No matches found." }],
+					details: { query: params.query },
+				};
+			}
+			const text = hits
+				.map((h, i) => `${i + 1}. ${h.path}  (score ${h.score.toFixed(2)}, ★${h.importance}, ${h.updated})\n   "${h.snippet}"`)
+				.join("\n\n");
 			return {
-				content: [{ type: "text", text: result }],
-				details: { query: params.query },
+				content: [{ type: "text", text }],
+				details: { query: params.query, hits: hits.map((h) => h.path) },
 			};
 		},
 	});
@@ -1185,7 +1162,10 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 			const root = resolveMemoryRoot();
 			if (!root) return;
-			const result = memoryFileSearch(query, root);
+			const hits = rankedSearch(query, root, { collectMdFiles, parseFrontmatter }, { topN: 5 });
+			const result = hits.length === 0
+				? "No matches found."
+				: hits.map((h, i) => `${i + 1}. ${h.path} (★${h.importance}, ${h.updated})`).join("\n");
 			ctx.ui.notify(result.substring(0, 500), "info");
 		},
 	});
