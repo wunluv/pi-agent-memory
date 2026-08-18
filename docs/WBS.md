@@ -26,7 +26,7 @@
 | 1.1.2 | UUID in commits + frontmatter | git commit author `agent-<short-uuid>`; `agent_id` in frontmatter | `git log` shows agent author; new writes carry `agent_id` |
 | 1.1.3 | Runtime UUID load | Load UUID at start; null-safe | No crash when `agent.json` absent |
 
-**Depends on:** nothing. **Issue:** to create.
+**Depends on:** nothing. **Issue:** #7 (open).
 
 ### 1.2 Memory Sync — Zone A only
 
@@ -37,7 +37,7 @@
 | 1.2.3 | `memory_sync_config` | get/set `push_on_commit`, `pull_on_start` | Read fills defaults; `root` only selects policy file |
 | 1.2.4 | `session_start` auto-pull | Conditional pull before Zone A context build | 2–3s fail-fast; unreachable server → continue on local state |
 
-**Depends on:** 1.1 (commit author uses UUID). **Issue:** to create.
+**Depends on:** 1.1 (commit author uses UUID). **Issue:** #8 (open).
 
 ### 1.3 Root Resolution & Discovery
 
@@ -48,7 +48,7 @@
 | 1.3.3 | `registry.json` | Authoritative name→path map; `/memory:register` writes it | Deterministic `/startwork` by name (see #4) |
 | 1.3.4 | `/startwork` as ritual | Load eagle eye + priorities; not a gate | Works with no `.memory/` present (auto-discover) |
 
-**Depends on:** 1.3.3 extends issue #1 (strict parser, shipped). **Issue:** 1.3.3 = #4 (open); 1.3.1/1.3.2/1.3.4 to create.
+**Depends on:** 1.3.3 extends issue #1 (strict parser, shipped). **Issue:** 1.3.3 = #4 (open); 1.3.1/1.3.2/1.3.4 = #9 (open).
 
 ### 1.4 Retrieval
 
@@ -58,7 +58,7 @@
 | 1.4.2 | Backlinks | `findBacklinks()`; `memory_read` shows "referenced by" | Path forms (`.md`/no-ext/suffix) resolve |
 | 1.4.3 | Archival vector search | `memory_archive_store`/`_search`; sentence-transformers + SQLite; derived index | Index rebuildable; text search works regardless |
 
-**Depends on:** 1.4.3 after 1.4.1 (keyword baseline first, semantic layer later). **Issues:** 1.4.1 = #2, 1.4.2 = #3 (open); 1.4.3 to create.
+**Depends on:** 1.4.3 after 1.4.1 (keyword baseline first, semantic layer later). **Issues:** 1.4.1 = #2, 1.4.2 = #3 (open); 1.4.3 = #10 (open).
 
 ### 1.5 Consolidation
 
@@ -67,7 +67,7 @@
 | 1.5.1 | `/remember` refinement | Scoped to 2–3 turns; prompt-style; project → `reference/`, human → `system/` | Correct routing; distill not transcribe |
 | 1.5.2 | Consolidation loop | `consolidateSession()` on `/endwork` — roll `## History`, mark stale, merge by topic | History cap; `[STALE]` marking; no data loss |
 
-**Depends on:** 1.5.2 uses `importance`/`updated` frontmatter (exists since Phase 1). **Issues:** 1.5.2 = #5 (open); 1.5.1 to create.
+**Depends on:** 1.5.2 uses `importance`/`updated` frontmatter (exists since Phase 1). **Issues:** 1.5.2 = #5 (open); 1.5.1 = #11 (open).
 
 ### 1.6 Context Budget
 
@@ -104,8 +104,8 @@ Everything else is independent and can be picked up in any order.
 | 1.4.2 | #3 | open |
 | 1.5.2 | #5 | open |
 | 1.6.1 | #6 | open |
-| 1.1.x | — | to create |
-| 1.2.x | — | to create |
-| 1.3.1/1.3.2/1.3.4 | — | to create |
-| 1.4.3 | — | to create |
-| 1.5.1 | — | to create |
+| 1.1.x | #7 | open |
+| 1.2.x | #8 | open |
+| 1.3.1/1.3.2/1.3.4 | #9 | open |
+| 1.4.3 | #10 | open |
+| 1.5.1 | #11 | open |
