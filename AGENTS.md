@@ -25,12 +25,14 @@ Issue-driven. Every change starts as a GitHub issue (template in `.github/ISSUE_
 **Loop (all tiers):**
 
 1. **Create issue:** `gh issue create` — problem, proposed solution, risk tier, test plan
-2. **Implement** in atomic commits (one intent each)
+2. **Implement** in atomic commits (one intent each). Reference the issue with `refs #n` in the commit body (links without closing). Never use closing keywords (`closes`/`fixes`/`resolves`).
 3. **Comment** on the issue for decisions; discuss with San when needed
 4. **Test** where applicable: `node --check`, dry-runs, curl API checks
 5. **Push:** `git push origin main` (routine) or open a PR referencing the issue (serious)
 6. **Deploy:** this extension is consumed via symlink (`~/.pi/agent/extensions/pi-agent-memory` → this tree), so the working tree IS the live code; changes take effect on next pi restart
-7. **Close issue** with fix ref: `gh issue close <n> -c "Fixed in <short-hash>"`
+7. **Close issue** explicitly, last: `gh issue close <n> -c "Fixed in <short-hash>. Verified: <test result>"`
+
+Closing is always explicit and the final step. Never use closing keywords in commits or PRs — they auto-close on push/merge, which is silent and drops the verification record.
 
 ## Session Start
 
