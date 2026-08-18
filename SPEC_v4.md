@@ -466,6 +466,7 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 
 - `resolveMemoryRoot` walks up from a stable current-project signal (not raw cwd); resolved once per session, cached
 - Deterministic registry (`registry.json`) — authoritative name→path lookup (strict parser landed in issue #1)
+- Robust `/startwork` — reconcile a stale registry path on move (yes/no prompt) and offer `/memory:init` when `.memory/` is absent (issue #13)
 - `/startwork` becomes a ritual (eagle eye + priorities), not a gate
 
 ### 2.4 Retrieval

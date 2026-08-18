@@ -45,10 +45,10 @@
 |----|---------|-------------|------------|
 | 1.3.1 | Walk-up resolver | `resolveMemoryRoot` walks up from stable project signal | No mid-session root flip; wrong root = local misplacement only |
 | 1.3.2 | Resolve-once cache | Resolve once per session, cache | Never re-walks per tool call |
-| 1.3.3 | `registry.json` | Authoritative name→path map; `/memory:register` writes it | Deterministic `/startwork` by name (see #4) |
+| 1.3.3 | Registry + robust `/startwork` | `registry.json` name→path map + reconcile-on-move prompt + offer `/memory:init` | Deterministic `/startwork` by name; stale path reconciled via prompt |
 | 1.3.4 | `/startwork` as ritual | Load eagle eye + priorities; not a gate | Works with no `.memory/` present (auto-discover) |
 
-**Depends on:** 1.3.3 extends issue #1 (strict parser, shipped). **Issue:** 1.3.3 = #4 (open); 1.3.1/1.3.2/1.3.4 = #9 (open).
+**Depends on:** 1.3.3 extends issue #1 (strict parser, shipped). **Issues:** 1.3.3 = #13 (open, folds in #4); 1.3.1/1.3.2/1.3.4 = #9 (open).
 
 ### 1.4 Retrieval
 
@@ -99,7 +99,7 @@ Everything else is independent and can be picked up in any order.
 
 | WBS | Issue | Status |
 |-----|-------|--------|
-| 1.3.3 | #4 | open |
+| 1.3.3 | #13 | open (folds #4) |
 | 1.4.1 | #2 | open |
 | 1.4.2 | #3 | open |
 | 1.5.2 | #5 | open |
