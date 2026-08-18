@@ -56,9 +56,9 @@
 |----|---------|-------------|------------|
 | 1.4.1 | BM25 ranked search | `ranked-search.ts`; replaces substring grep; importance + recency boosts; snippets | `node --check`; fixture corpus ranks correctly | 
 | 1.4.2 | Backlinks | `findBacklinks()`; `memory_read` shows "referenced by" | Path forms (`.md`/no-ext/suffix) resolve |
-| 1.4.3 | Archival vector search | `memory_archive_store`/`_search`; sentence-transformers + SQLite; derived index | Index rebuildable; text search works regardless |
+| 1.4.3 | Archival vector search | Reuse heaven-search as agent-only sidecar (deferred, see #10) | — future — |
 
-**Depends on:** 1.4.3 after 1.4.1 (keyword baseline first, semantic layer later). **Issues:** 1.4.1 = #2, 1.4.2 = #3 (open); 1.4.3 = #10 (open).
+**Depends on:** 1.4.3 after 1.4.1 (keyword baseline first, semantic layer later). **Issues:** 1.4.1 = #2, 1.4.2 = #3 (open); 1.4.3 = #10 (future).
 
 ### 1.5 Consolidation
 
@@ -93,7 +93,7 @@ Everything else is independent and can be picked up in any order.
 2. **Foundation:** 1.1 → 1.2 — identity, then sync
 3. **Discovery:** 1.3
 4. **Consolidation:** 1.5
-5. **Archival:** 1.4.3 — last (heaviest; needs real usage patterns first)
+5. **Archival:** 1.4.3 — DEFERRED (future: compose with heaven-search as a sidecar)
 
 ## Issue Map
 
@@ -107,5 +107,5 @@ Everything else is independent and can be picked up in any order.
 | 1.1.x | #7 | open |
 | 1.2.x | #8 | open |
 | 1.3.1/1.3.2/1.3.4 | #9 | open |
-| 1.4.3 | #10 | open |
+| 1.4.3 | #10 | future |
 | 1.5.1 | #11 | open |

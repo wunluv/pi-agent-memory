@@ -472,7 +472,7 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 
 - BM25 ranked search with importance/recency boosts (replaces substring grep) — issue #2
 - Backlinks — bidirectional `[[wiki-link]]` navigation — issue #3
-- Archival vector search — sentence-transformers + SQLite, derived index (heaven-search pattern)
+- Archival vector search — DEFERRED (future): reuse heaven-search as an agent-only sidecar (issue #10), not built from scratch
 
 ### 2.5 Consolidation
 
