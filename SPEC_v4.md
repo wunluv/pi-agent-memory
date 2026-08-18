@@ -445,16 +445,49 @@ A single pi extension: `~/.pi/agent/extensions/agent-memory.ts`
 | Tool count | Five → six (unchanged count, changed signatures) |
 | Command count | Seven → eleven |
 
-## What's Not in This Spec
+## Phase 2 Scope (consolidated 2026-08)
 
-Deliberately deferred:
+Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with the retrieval/consolidation improvements from the 2026-08 design critique. Detailed work breakdown, dependencies, and acceptance criteria live in `docs/WBS.md`. Each work package maps to one GitHub issue.
 
-- **Dreaming/reflection sub-agents** — `/remember` and `/endwork` are explicit. Autonomous consolidation is Phase 2.
-- **Vector search / embeddings** — Text search handles markdown well enough.
-- **Sub-agent spawning** — Single agent, single session root. Multi-agent coordination is Phase 2.
-- **Memory compaction** — Pi handles context compaction. Summarization needs real usage patterns first.
-- **Cross-agent shared memory** — Zone B can be shared by convention (multiple agents read/write `.memory/`), but tool-level permissions are Phase 2.
-- **Cross-device Zone B sync** — Zone A syncs via Letta server. Zone B stays local. Stretch goal.
+### 2.1 Agent Identity (foundation)
+
+- `agent.json` (uuid v4 + name) generated at `/agent:init`
+- Agent UUID used in git commit author (`agent-<short-uuid>`) and frontmatter `agent_id`
+- Runtime loads UUID on start; absent UUID degrades gracefully
+
+### 2.2 Memory Sync (Zone A)
+
+- git `post-commit` hook: conditional push (gated on `push_on_commit` + `server_url` + Zone A), 5s best-effort, non-blocking. Zone B never pushes.
+- `/agent:pull [uuid]` — pure `git clone`, agent name read from `agent.json` in the clone
+- `memory_sync_config` tool — get/set `push_on_commit`, `pull_on_start`
+- `session_start` auto-pull — 2–3s fail-fast, continue on local state
+
+### 2.3 Root Resolution & Discovery
+
+- `resolveMemoryRoot` walks up from a stable current-project signal (not raw cwd); resolved once per session, cached
+- Deterministic registry (`registry.json`) — authoritative name→path lookup (strict parser landed in issue #1)
+- `/startwork` becomes a ritual (eagle eye + priorities), not a gate
+
+### 2.4 Retrieval
+
+- BM25 ranked search with importance/recency boosts (replaces substring grep) — issue #2
+- Backlinks — bidirectional `[[wiki-link]]` navigation — issue #3
+- Archival vector search — sentence-transformers + SQLite, derived index (heaven-search pattern)
+
+### 2.5 Consolidation
+
+- `/remember` scoped to 2–3 turns, prompt-style; project insight → `reference/`, human insight → `system/`
+- Consolidation loop — decay/compression on `/endwork` (roll `## History`, mark stale, merge by topic) — issue #5
+
+### 2.6 Context Budget
+
+- Token cap for `system/` injection, ranked by importance + recency — issue #6
+
+### Still out of scope
+
+- Sub-agent spawning and multi-agent coordination ACLs
+- Cross-device Zone B sync (Zone B stays local)
+- Cross-interface session merging
 
 ## Acceptance Criteria
 
