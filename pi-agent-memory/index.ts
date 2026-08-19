@@ -411,7 +411,7 @@ interface OrgRegistry {
 }
 
 /** Bootstrap the shared org root (~/.pi/org/) if missing. Idempotent. */
-function ensureOrgRoot(): boolean {
+function ensureOrgRoot(uuid: string | null): boolean {
 	try {
 		if (!fs.existsSync(ORG_ROOT)) {
 			fs.mkdirSync(path.join(ORG_ROOT, "roles"), { recursive: true });
@@ -424,8 +424,8 @@ function ensureOrgRoot(): boolean {
 		}
 		if (!isGitRepo(ORG_ROOT)) {
 			initGitRepo(ORG_ROOT);
-			gitAs(["add", "-A"], ORG_ROOT, agentUuid);
-			gitAs(["commit", "-m", "org: bootstrap org root (registry, roles, README)"], ORG_ROOT, agentUuid);
+			gitAs(["add", "-A"], ORG_ROOT, uuid);
+			gitAs(["commit", "-m", "org: bootstrap org root (registry, roles, README)"], ORG_ROOT, uuid);
 		}
 		return true;
 	} catch {
@@ -449,14 +449,14 @@ function loadOrgRegistry(): OrgRegistry {
 }
 
 /** Persist the registry and commit it in the org root repo. */
-function saveOrgRegistry(reg: OrgRegistry): boolean {
+function saveOrgRegistry(reg: OrgRegistry, uuid: string | null): boolean {
 	try {
 		reg.updated = new Date().toISOString().split("T")[0];
 		fs.writeFileSync(ORG_REGISTRY, JSON.stringify(reg, null, 2) + "\n", "utf-8");
 		const staged = git(["status", "--porcelain"], ORG_ROOT);
 		if (staged.stdout.trim()) {
-			gitAs(["add", ORG_REGISTRY], ORG_ROOT, agentUuid);
-			gitAs(["commit", "-m", "org: update registry"], ORG_ROOT, agentUuid);
+			gitAs(["add", ORG_REGISTRY], ORG_ROOT, uuid);
+			gitAs(["commit", "-m", "org: update registry"], ORG_ROOT, uuid);
 		}
 		return true;
 	} catch {
@@ -466,10 +466,10 @@ function saveOrgRegistry(reg: OrgRegistry): boolean {
 
 /** Upsert a member row in the org registry (thin index — identity content stays in agent.json). */
 function registerMember(name: string, uuid: string, status: "ephemeral" | "member"): boolean {
-	if (!ensureOrgRoot()) return false;
+	if (!ensureOrgRoot(uuid)) return false;
 	const reg = loadOrgRegistry();
 	reg.members[name] = { name, uuid, status, memoryPath: `~/.pi/agents/${name}/memory` };
-	return saveOrgRegistry(reg);
+	return saveOrgRegistry(reg, uuid);
 }
 
 /** Strip Letta-era cruft (hooks, config, remotes) from an existing memory repo. Idempotent. */
@@ -1071,7 +1071,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			// Registry is the source of truth; agent.json mirrors the flip
 			member.status = "member";
-			if (saveOrgRegistry(reg)) {
+			if (saveOrgRegistry(reg, agentUuid)) {
 				const agentJsonPath = path.join(AGENTS_DIR, name, "memory", "agent.json");
 				try {
 					const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"));
