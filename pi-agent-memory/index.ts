@@ -499,7 +499,7 @@ function stripLegacyCruft(memoryRoot: string): void {
  * stripped, accumulated memory committed (catch-up), member registered.
  * Returns a summary for notification, or null on failure.
  */
-function ensureAgentIdentity(name: string): { uuid: string; isNew: boolean; kept: boolean; caughtUp: boolean; registered: boolean; status: "ephemeral" | "member" } | null {
+function ensureAgentIdentity(name: string, isNew: boolean): { uuid: string; isNew: boolean; kept: boolean; caughtUp: boolean; registered: boolean; status: "ephemeral" | "member" } | null {
 	try {
 		const agentDir = path.join(AGENTS_DIR, name);
 		const memoryRoot = path.join(agentDir, "memory");
@@ -523,8 +523,6 @@ function ensureAgentIdentity(name: string): { uuid: string; isNew: boolean; kept
 			uuid = randomUUID();
 			fs.mkdirSync(memoryRoot, { recursive: true });
 		}
-
-		const isNew = !fs.existsSync(agentDir) || !fs.existsSync(path.join(memoryRoot, "system"));
 
 		// Agent's own repo: clean, then authored as agent-<short-uuid>
 		if (!isGitRepo(memoryRoot)) initGitRepo(memoryRoot);
@@ -1030,7 +1028,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 
 			// Identity + clean repo + registry (shared with session_start auto-backfill)
-			const result = ensureAgentIdentity(name);
+			const result = ensureAgentIdentity(name, isNew);
 			if (!result) {
 				ctx.ui.notify(`Failed to initialize agent "${name}".`, "warning");
 				return;
@@ -1514,7 +1512,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		// identified on load. Idempotent, one-time per agent; covers pi restart
 		// and /reload so the last-used agent's memory loads cleanly.
 		if (activeAgent && !agentUuid) {
-			const result = ensureAgentIdentity(activeAgent);
+			const result = ensureAgentIdentity(activeAgent, false);
 			if (result) {
 				agentUuid = result.uuid;
 				ctx.ui.notify(
