@@ -493,6 +493,75 @@ function stripLegacyCruft(memoryRoot: string): void {
 	}
 }
 
+/**
+ * Ensure an agent has identity + a clean, committed repo. Shared by /agent:init
+ * and the session_start auto-backfill. Idempotent: UUID kept, Letta cruft
+ * stripped, accumulated memory committed (catch-up), member registered.
+ * Returns a summary for notification, or null on failure.
+ */
+function ensureAgentIdentity(name: string): { uuid: string; isNew: boolean; kept: boolean; caughtUp: boolean; registered: boolean; status: "ephemeral" | "member" } | null {
+	try {
+		const agentDir = path.join(AGENTS_DIR, name);
+		const memoryRoot = path.join(agentDir, "memory");
+		const agentJsonPath = path.join(memoryRoot, "agent.json");
+
+		// Identity: keep existing UUID (idempotent, never regenerated),
+		// backfill legacy agents (no agent.json), create for new agents.
+		let uuid: string | null = null;
+		let status: "ephemeral" | "member" = "ephemeral";
+		if (fs.existsSync(agentJsonPath)) {
+			try {
+				const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"));
+				uuid = typeof parsed.uuid === "string" && parsed.uuid ? parsed.uuid : null;
+				status = parsed.status === "member" ? "member" : "ephemeral";
+			} catch {
+				// corrupt agent.json → regenerate below
+			}
+		}
+		const kept = !!uuid;
+		if (!uuid) {
+			uuid = randomUUID();
+			fs.mkdirSync(memoryRoot, { recursive: true });
+		}
+
+		const isNew = !fs.existsSync(agentDir) || !fs.existsSync(path.join(memoryRoot, "system"));
+
+		// Agent's own repo: clean, then authored as agent-<short-uuid>
+		if (!isGitRepo(memoryRoot)) initGitRepo(memoryRoot);
+		stripLegacyCruft(memoryRoot); // remove Letta hooks/config/remotes (idempotent)
+		git(["config", "user.name", `agent-${shortUuid(uuid)}`], memoryRoot);
+		git(["config", "user.email", `${uuid}@pi.local`], memoryRoot);
+
+		// agent.json — stable identity (UUID kept, never regenerated)
+		fs.writeFileSync(agentJsonPath, JSON.stringify({ uuid, name, status }, null, 2) + "\n", "utf-8");
+
+		// Commit; skip when nothing changed (idempotent re-init).
+		// Backfill path: accumulated memory lands in its own catch-up commit first.
+		let caughtUp = false;
+		git(["add", "-A"], memoryRoot);
+		const staged = git(["status", "--porcelain"], memoryRoot);
+		if (staged.stdout.trim()) {
+			if (!isNew) {
+				git(["restore", "--staged", "agent.json"], memoryRoot);
+				const memoryOnly = git(["status", "--porcelain"], memoryRoot).stdout.trim();
+				if (memoryOnly) {
+					git(["commit", "-m", "memory: catch-up commit (accumulated agent memory)"], memoryRoot);
+					caughtUp = true;
+				}
+				git(["add", "agent.json"], memoryRoot);
+			}
+			git(["commit", "-m", isNew ? `init: Agent "${name}" memory system setup` : `identity: backfill agent.json for ${name}`], memoryRoot);
+		}
+
+		// Org registry: member row; /agent:promote flips ephemeral → member
+		const registered = registerMember(name, uuid, status);
+
+		return { uuid, isNew, kept, caughtUp, registered, status };
+	} catch {
+		return null;
+	}
+}
+
 /** Search session history */
 function searchSessions(query: string): string {
 	if (!fs.existsSync(SESSIONS_DIR)) return "No session history found.";
@@ -839,29 +908,11 @@ export default function (pi: ExtensionAPI) {
 
 			const agentDir = path.join(AGENTS_DIR, name);
 			const memoryRoot = path.join(agentDir, "memory");
-			const agentJsonPath = path.join(memoryRoot, "agent.json");
-
-			// Identity: keep existing UUID (idempotent, never regenerated),
-			// backfill legacy agents (no agent.json), create for new agents.
-			let uuid: string | null = null;
-			let status: "ephemeral" | "member" = "ephemeral";
-			if (fs.existsSync(agentJsonPath)) {
-				try {
-					const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"));
-					uuid = typeof parsed.uuid === "string" && parsed.uuid ? parsed.uuid : null;
-					status = parsed.status === "member" ? "member" : "ephemeral";
-				} catch {
-					// corrupt agent.json → regenerate below
-				}
-			}
-			if (!uuid) {
-				uuid = randomUUID();
-				fs.mkdirSync(memoryRoot, { recursive: true });
-			}
 
 			// Scaffold only when the agent (or its memory tree) is new
 			const isNew = !fs.existsSync(agentDir) || !fs.existsSync(path.join(memoryRoot, "system"));
 			if (isNew) {
+				fs.mkdirSync(memoryRoot, { recursive: true });
 				initGitRepo(memoryRoot);
 
 			const sysDir = path.join(memoryRoot, "system");
@@ -978,41 +1029,20 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			}
 
-			// agent.json — stable identity (UUID kept, never regenerated)
-			fs.writeFileSync(agentJsonPath, JSON.stringify({ uuid, name, status }, null, 2) + "\n", "utf-8");
-
-			// Agent's own repo: commits authored as agent-<short-uuid> for provenance
-			if (!isGitRepo(memoryRoot)) initGitRepo(memoryRoot);
-			stripLegacyCruft(memoryRoot); // remove Letta hooks/config/remotes (idempotent)
-			git(["config", "user.name", `agent-${shortUuid(uuid)}`], memoryRoot);
-			git(["config", "user.email", `${uuid}@pi.local`], memoryRoot);
-
-			// Commit identity + scaffold; skip when nothing changed (idempotent re-init).
-			// Backfill path: accumulated memory lands in its own catch-up commit first.
-			git(["add", "-A"], memoryRoot);
-			const staged = git(["status", "--porcelain"], memoryRoot);
-			if (staged.stdout.trim()) {
-				if (!isNew) {
-					git(["restore", "--staged", "agent.json"], memoryRoot);
-					const memoryOnly = git(["status", "--porcelain"], memoryRoot).stdout.trim();
-					if (memoryOnly) {
-						git(["commit", "-m", "memory: catch-up commit (accumulated agent memory)"], memoryRoot);
-					}
-					git(["add", "agent.json"], memoryRoot);
-				}
-				git(["commit", "-m", isNew ? `init: Agent "${name}" memory system setup` : `identity: backfill agent.json for ${name}`], memoryRoot);
+			// Identity + clean repo + registry (shared with session_start auto-backfill)
+			const result = ensureAgentIdentity(name);
+			if (!result) {
+				ctx.ui.notify(`Failed to initialize agent "${name}".`, "warning");
+				return;
 			}
 
-			// Org registry: member row; /agent:promote flips ephemeral → member
-			const registered = registerMember(name, uuid, status);
-
 			activeAgent = name;
-			agentUuid = uuid;
+			agentUuid = result.uuid;
 			saveActiveAgent(name);
 
 			ctx.ui.notify(
-				`\u2705 Agent "${name}" ready. UUID: ${uuid}${isNew ? "" : " (kept)"}\n` +
-				`   Org registry: ${registered ? `registered (${status})` : "FAILED"}\n` +
+				`\u2705 Agent "${name}" ready. UUID: ${result.uuid}${result.kept ? " (kept)" : ""}\n` +
+				`   Org registry: ${result.registered ? `registered (${result.status})` : "FAILED"}\n` +
 				`   Next: edit system/ files or /agent:switch ${name}`,
 				"success",
 			);
@@ -1475,9 +1505,26 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		};
 	});
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, ctx) => {
 		activeAgent = loadActiveAgent();
 		agentUuid = loadAgentIdentity(activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
+
+		// Auto-backfill: a legacy agent (no identity yet) gets cleaned and
+		// identified on load. Idempotent, one-time per agent; covers pi restart
+		// and /reload so the last-used agent's memory loads cleanly.
+		if (activeAgent && !agentUuid) {
+			const result = ensureAgentIdentity(activeAgent);
+			if (result) {
+				agentUuid = result.uuid;
+				ctx.ui.notify(
+					`\u2705 Backfilled "${activeAgent}" on load: identity created, Letta cruft stripped, memory committed.\n` +
+					`   UUID: ${result.uuid}${result.caughtUp ? " | catch-up commit landed" : ""}`,
+					"success",
+				);
+			} else {
+				ctx.ui.notify(`Auto-backfill failed for "${activeAgent}". Run /agent:init ${activeAgent} manually.`, "warning");
+			}
+		}
 	});
 }
