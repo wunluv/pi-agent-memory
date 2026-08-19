@@ -472,6 +472,27 @@ function registerMember(name: string, uuid: string, status: "ephemeral" | "membe
 	return saveOrgRegistry(reg);
 }
 
+/** Strip Letta-era cruft (hooks, config, remotes) from an existing memory repo. Idempotent. */
+function stripLegacyCruft(memoryRoot: string): void {
+	// Letta hooks: pre-commit rejects our frontmatter schema; post-commit pushes to the dead memfs server
+	for (const hook of ["pre-commit", "post-commit"]) {
+		const p = path.join(memoryRoot, ".git", "hooks", hook);
+		if (fs.existsSync(p)) fs.rmSync(p);
+	}
+	// Letta config section + any credential helpers in repo-local config
+	git(["config", "--remove-section", "letta"], memoryRoot);
+	const cred = git(["config", "--local", "--get-regexp", "^credential\\."], memoryRoot);
+	for (const line of cred.stdout.split("\n").filter(Boolean)) {
+		const key = line.split(" ")[0];
+		if (key) git(["config", "--unset-all", key], memoryRoot);
+	}
+	// Letta-era remotes: origin (dead memfs URL) and github (letta backup)
+	for (const remote of ["origin", "github"]) {
+		const url = git(["remote", "get-url", remote], memoryRoot).stdout.trim();
+		if (url) git(["remote", "remove", remote], memoryRoot);
+	}
+}
+
 /** Search session history */
 function searchSessions(query: string): string {
 	if (!fs.existsSync(SESSIONS_DIR)) return "No session history found.";
@@ -962,13 +983,23 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			// Agent's own repo: commits authored as agent-<short-uuid> for provenance
 			if (!isGitRepo(memoryRoot)) initGitRepo(memoryRoot);
+			stripLegacyCruft(memoryRoot); // remove Letta hooks/config/remotes (idempotent)
 			git(["config", "user.name", `agent-${shortUuid(uuid)}`], memoryRoot);
 			git(["config", "user.email", `${uuid}@pi.local`], memoryRoot);
 
-			// Commit identity + scaffold; skip when nothing changed (idempotent re-init)
+			// Commit identity + scaffold; skip when nothing changed (idempotent re-init).
+			// Backfill path: accumulated memory lands in its own catch-up commit first.
 			git(["add", "-A"], memoryRoot);
 			const staged = git(["status", "--porcelain"], memoryRoot);
 			if (staged.stdout.trim()) {
+				if (!isNew) {
+					git(["restore", "--staged", "agent.json"], memoryRoot);
+					const memoryOnly = git(["status", "--porcelain"], memoryRoot).stdout.trim();
+					if (memoryOnly) {
+						git(["commit", "-m", "memory: catch-up commit (accumulated agent memory)"], memoryRoot);
+					}
+					git(["add", "agent.json"], memoryRoot);
+				}
 				git(["commit", "-m", isNew ? `init: Agent "${name}" memory system setup` : `identity: backfill agent.json for ${name}`], memoryRoot);
 			}
 
