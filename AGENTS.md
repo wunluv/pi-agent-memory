@@ -137,7 +137,7 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 - TypeBox for parameter schemas (pi SDK requirement)
 - TypeScript — single file (`index.ts`), ~530 lines
 - `memory_write` is always an atomic git commit
-- Zone B `.memory/` repos NEVER have a git remote — local version control only
+- Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage
 - `~` in root params expanded to home directory
 
