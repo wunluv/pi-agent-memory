@@ -449,14 +449,14 @@ A single pi extension: `~/.pi/agent/extensions/agent-memory.ts`
 
 Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with the retrieval/consolidation improvements from the 2026-08 design critique. Detailed work breakdown, dependencies, and acceptance criteria live in `docs/WBS.md`. Each work package maps to one GitHub issue.
 
-> **Architecture decisions 2026-08-19** (tracked in #17): three buckets — `system/` (identity), `knowledge/` (global, renamed from `reference/`), and `<project>/.memory/` (project). Zone B is private + syncable (optional private remote, never the public code repo). Per-subagent memory is thin (role identity + pointers); the project index is a shared registry, not per-agent copies. See `.memory/reference/pi-agent-memory/decision-2026-08-19-one-store.md`.
+> **Architecture decisions 2026-08-19** (tracked in #17): four buckets — `system/` (identity), `knowledge/` (global, renamed from `reference/`), `<project>/.memory/` (project), and `~/.pi/org/` (org shared state: registries + role library — see §2.9). Zone B is private + syncable (optional private remote, never the public code repo). Per-subagent memory is thin (role identity + pointers); the project index is a shared registry, not per-agent copies. See `.memory/reference/pi-agent-memory/decision-2026-08-19-one-store.md`.
 
 ### 2.1 Agent Identity (foundation)
 
 **Org-layer roster — hybrid registry** (decided 2026-08-19 with San):
 
 - **Per-agent `agent.json`** (uuid v4 + name) generated at `/agent:init` — the identity file, owned by the member's own Zone A (`~/.pi/agents/<name>/memory/agent.json`). The care loop (feedback, trajectory, growth) writes to the member's own repo — zero cross-agent contention on identity data.
-- **Thin org index** — a locator, not a copy: name → Zone A path, UUID, status (`ephemeral | member`). Touched only at membership transitions (recruitment, promotion), which are rare and human-gated. No daily writes, so no drift pressure. Identity content is authored once, in the member's Zone A; the index never duplicates it.
+- **Thin org index** — a locator, not a copy: name → Zone A path, UUID, status (`ephemeral | member`). Lives in the shared org root as the `members` section of `~/.pi/org/registry.json` (see §2.9) — reachable by every agent, never duplicated in any Zone A. Touched only at membership transitions (recruitment, promotion), which are rare and human-gated. No daily writes, so no drift pressure. Identity content is authored once, in the member's Zone A; the index never duplicates it.
 - **Temp is a first-class identity state.** A temp on a project gets a temp UUID + registry row; promotion is a state flip (`ephemeral → member`), not a data migration. The audition trail survives intact.
 - Agent UUID used in git commit author (`agent-<short-uuid>`) and frontmatter `agent_id`
 - Runtime loads UUID on start; absent UUID degrades gracefully
@@ -474,7 +474,7 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 ### 2.3 Root Resolution & Discovery
 
 - `resolveMemoryRoot` walks up from a stable current-project signal (not raw cwd); resolved once per session, cached
-- Deterministic registry (`registry.json`) — authoritative name→path lookup (strict parser landed in issue #1)
+- Deterministic registry (`registry.json`) — authoritative name→path lookup, ONE shared file in the org root (`~/.pi/org/registry.json`), read by every agent. Never a per-agent copy. **Correction to the earlier #13 framing:** registry.json cannot live in "Zone A" if Zone A is per-agent — N copies = drift. It lives in the shared org root (strict parser landed in issue #1)
 - Robust `/startwork` — reconcile a stale registry path on move (yes/no prompt) and offer `/memory:init` when `.memory/` is absent (issue #13)
 - `/startwork` becomes a ritual (eagle eye + priorities), not a gate
 
@@ -509,11 +509,52 @@ The project's authoritative team binding. Answers one question: **who serves thi
 - **Private to the project:** lives in `.memory/`, syncs with the project's private memory remote (#8), never the public code repo.
 - **Three distinct concerns, three files:** org registry answers "who exists" (#7); project registry answers "where projects live" (#13); manifest answers "who serves which project" (#18).
 
+### 2.9 Org root — shared org state
+
+`~/.pi/org/` — one shared git repo, the org layer above per-agent Zone A. Reachable by every agent via the existing `root` override (`root="~/.pi/org/"`), private + syncable exactly like Zone B (local git + optional private remote via #8's server). No agent holds a copy in its own Zone A.
+
+```
+~/.pi/org/
+  registry.json     — projects (name → path, #13) + members (name → Zone A path, UUID, status, #7)
+  roles/            — role library (hats): shared role specs, evolved by wearers
+  README.md         — what this is, read/write rules, single-writer note
+```
+
+- **`registry.json` is an aggregate file** — single-writer convention (per #14's concurrency model): the orchestrator or a designated writer merges deliberately. Writes are rare and gated: `/startwork` reconcile (projects), `/agent:init` + promotion (members).
+- **`roles/` is the planned home of the shared role library** (the hats). Seam noted, not solved: methodology-specific role sets (Heaven's `pi-agents/`) may stay in their owning repo or migrate later.
+- **Read path:** any agent reads `registry.json` with `root="~/.pi/org/"`; auto-resolution is a later concern (#9 territory).
+
+### 2.10 AGENTS.md — operational brief convention
+
+The agent-facing operational map at a project root, generated by `/memory:init` when missing (criterion 13), sub-500 words. Read by every agent and subagent at session start. Answers three questions: **what is this project, where are things, how do we work.**
+
+**Shape:**
+
+1. **Vibe** — one paragraph. Who we are, how we think, how we treat each other.
+2. **Map** — one line per artifact that matters. Pointers only.
+3. **Workflow + Rules** — session start, the commands that matter, gated vs operational.
+
+**Memory content in the brief is the delta** — what is project-specific and NOT already in the memory system prompt (tools, zones, tool behaviors, /startwork protocol live there):
+
+- Memory pointers: where `.memory/` lives, conventions in force (team manifest §2.8, org registry §2.9), one line each.
+- Project-specific memory rules: e.g. "status.md updated at end of work", "framework changes require Gate 2", "decisions go in decisions/."
+
+**Anti-bloat guards (the invariant):**
+
+- No diagrams — docs/ owns visuals
+- No justification — state the rule, not the reasoning; framework/ owns reasoning
+- No roster — that's the team manifest, never the brief
+- No tool documentation — the system prompt owns it
+- No duplication — if it lives in framework/, docs/, manifest, or org root, the brief points, it never repeats
+- **The word budget is the enforcement mechanism** — over 500 words means a section belongs in another document
+
+**Composition:** the brief points down to framework/ (constitution), docs/ (team model), manifest (roster), org root (registry + roles), persona (ethos). One document per job.
+
 ### Still out of scope
 
 - Sub-agent spawning and multi-agent coordination ACLs
 - Team care-loop records (feedback, trajectory, hat evolution) — designed in a later phase
-- Cross-device Zone B sync (Zone B stays local)
+- Cross-device Zone B sync (Zone B stays local; org root is syncable per §2.9)
 - Cross-interface session merging
 
 ## Acceptance Criteria
@@ -530,5 +571,6 @@ The project's authoritative team binding. Answers one question: **who serves thi
 10. **Cold start is under 900 tokens** (Zone A only, measured via Pi's token usage)
 11. **`git log`** inside `.memory/` shows all writes with descriptive commit messages
 12. **Zone B `.memory/` is private** — local git + optional private remote (mem server); never in the project's public code repo
-13. **`AGENTS.md`** is generated by `/memory:init` when missing, sub-500 words, agent-facing operational map
+13. **`AGENTS.md`** is generated by `/memory:init` when missing, sub-500 words, agent-facing operational map in the §2.10 shape (Vibe / Map / Workflow + Rules)
 14. **`/memory:init <project>`** scaffolds `.memory/team/manifest.md` (empty roster template + conventions header); idempotent — never clobbers an existing manifest
+15. **`~/.pi/org/`** exists (git repo, private) with `registry.json` (projects + members sections) + `roles/` + README; any agent reads it via `root="~/.pi/org/"`

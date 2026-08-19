@@ -27,8 +27,9 @@
 | 1.1.1 | `agent.json` generation | `/agent:init` writes `agent.json` (uuid v4 + name) | File created; re-init is idempotent (keeps UUID) |
 | 1.1.2 | UUID in commits + frontmatter | git commit author `agent-<short-uuid>`; `agent_id` in frontmatter | `git log` shows agent author; new writes carry `agent_id` |
 | 1.1.3 | Runtime UUID load | Load UUID at start; null-safe | No crash when `agent.json` absent |
-| 1.1.4 | Thin org index | Locator file: name → Zone A path, UUID, status (`ephemeral | member`); written only at membership transitions | Index lists members; never duplicates identity content |
+| 1.1.4 | Thin org index | Locator in shared org root: `members` section of `~/.pi/org/registry.json` — name → Zone A path, UUID, status (`ephemeral | member`); written only at membership transitions | Index lists members; never duplicates identity content; readable by any agent via `root="~/.pi/org/"` |
 | 1.1.5 | Temp identity state | First-class ephemeral state: temp UUID + registry row | Promotion = state flip (`ephemeral → member`), no data migration |
+| 1.1.6 | Org root bootstrap | Create `~/.pi/org/` (git repo, private) with `registry.json` (projects + members sections), `roles/`, README | Root exists after `/agent:init`; registry readable by any agent; single-writer note in README |
 
 **Depends on:** nothing. **Issue:** #7 (open).
 
@@ -95,8 +96,9 @@
 |----|---------|-------------|------------|
 | 1.8.1 | Manifest scaffold | `/memory:init` creates `.memory/team/manifest.md` (empty roster template + conventions header) for new AND existing projects; idempotent | Scaffold present after init; existing manifest never clobbered |
 | 1.8.2 | Roster-only contract | Manifest holds Role → Identity → UUID → Status only; review gates live in project planning docs, care-loop records deferred | Schema enforced by 1.7 (future); SPEC §2.8 captures the split |
+| 1.8.3 | AGENTS.md brief template | `/memory:init` scaffolds the tight operational brief (Vibe / Map / Workflow + Rules, §2.10 shape, sub-500 words) when missing; never clobbers | Scaffold matches §2.10; existing AGENTS.md untouched; memory content limited to pointers + project-specific rules |
 
-**Depends on:** 1.1 (manifest references UUIDs). **Issue:** #18 (open).
+**Depends on:** 1.1 (manifest references UUIDs). **Issues:** 1.8.1/1.8.2 = #18 (open); 1.8.3 = #19 (open).
 
 ## Dependencies
 
@@ -123,15 +125,16 @@ Everything else is independent and can be picked up in any order.
 
 | WBS | Issue | Status |
 |-----|-------|--------|
-| 1.3.3 | #13 | open (folds #4) |
+| 1.3.3 | #13 | open (folds #4; registry home corrected to org root) |
 | 1.4.1 | #2 | merged (PR #12) |
 | 1.4.2 | #3 | merged (PR #15) |
 | 1.5.2 | #5 | open |
 | 1.6.1 | #6 | merged (PR #15) |
-| 1.1.x | #7 | open (hybrid registry specced) |
+| 1.1.x | #7 | open (hybrid registry specced; org root home pinned §2.9) |
 | 1.2.x | #8 | open |
 | 1.3.1/1.3.2/1.3.4 | #9 | open |
 | 1.4.3 | #10 | future |
 | 1.5.1 | #11 | open |
 | 1.7.1 | #16 | open |
 | 1.8.x | #18 | open |
+| 1.8.3 | #19 | open |
