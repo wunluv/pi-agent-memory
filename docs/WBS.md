@@ -33,13 +33,13 @@
 
 **Depends on:** nothing. **Issue:** #7 (open).
 
-### 1.2 Memory Sync — Zone A only
+### 1.2 Memory Sync — Zone A only (issue #8)
 
 | ID | Package | Deliverable | Acceptance |
 |----|---------|-------------|------------|
-| 1.2.1 | `post-commit` push hook | Hook on Zone A repo; pushes if `push_on_commit` + `server_url` + Zone A | Zone B never pushes; failure logged, write still succeeds; 5s cap |
-| 1.2.2 | `/agent:pull [uuid]` | Pure `git clone` from server; name from `agent.json` | Works against any git remote (GitHub, memfs) |
-| 1.2.3 | `memory_sync_config` | get/set `push_on_commit`, `pull_on_start` | Read fills defaults; `root` only selects policy file |
+| 1.2.1 | Async push on commit | Extension-level detached push (`pull --rebase --autostash` → `push`) after a Zone A commit when `push_on_commit` + `server_url` set; logs to `memory-repository-push.log`; 60s ceiling, never killed mid-operation | Engine pushes only the active agent's Zone A repo (Zone B/org root = #24); failure logged, write never blocks |
+| 1.2.2 | `/agent:pull [uuid]` | Pure `git clone` from `<server_url>/<uuid>.git`; name from `agent.json` in the clone; uuid verified; author config + remote re-applied; collision prompts | Works against any git remote (ssh regen, GitHub); mismatched uuid rejected |
+| 1.2.3 | `memory_sync_config` | get/set `push_on_commit`, `pull_on_start` in `~/.pi/memory-sync.json` (mode 600) | Defaults true when `server_url` set; sync off when unset; get/set round-trips |
 | 1.2.4 | `session_start` auto-pull | Conditional pull before Zone A context build | 2–3s fail-fast; unreachable server → continue on local state |
 
 **Depends on:** 1.1 (commit author uses UUID). **Issue:** #8 (open).
