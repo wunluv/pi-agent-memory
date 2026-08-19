@@ -1116,13 +1116,24 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 
-			// Check for uncommitted changes
+			// Check for uncommitted changes and report what was saved
+			let commitInfo = "";
 			if (isGitRepo(sessionMemoryRoot)) {
 				const status = git(["status", "--porcelain"], sessionMemoryRoot);
-				if (status.stdout.trim()) {
+				const changed = status.stdout.trim();
+				if (changed) {
 					const now = new Date().toISOString().split("T")[0];
 					git(["add", "-A"], sessionMemoryRoot);
-					git(["commit", "-m", `endwork: Session consolidation ${now}`], sessionMemoryRoot);
+					const commit = git(["commit", "-m", `endwork: Session consolidation ${now}`], sessionMemoryRoot);
+					if (commit.code === 0) {
+						const head = git(["rev-parse", "--short", "HEAD"], sessionMemoryRoot);
+						const files = changed.split("\n").filter(Boolean).length;
+						commitInfo = `   Committed ${head.stdout.trim()} (${files} file${files === 1 ? "" : "s"}).\n`;
+					} else {
+						commitInfo = "   Commit failed; changes left in working tree.\n";
+					}
+				} else {
+					commitInfo = "   No changes to commit.\n";
 				}
 			}
 
@@ -1131,6 +1142,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			ctx.ui.notify(
 				`\u2705 Session ended. Memory root cleared.\n` +
+				commitInfo +
 				`   Project memory at: ${root}\n` +
 				`   Remember to run super_sessions weekly for extraction.`,
 				"success",
