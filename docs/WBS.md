@@ -14,7 +14,8 @@
 ├── 1.4 Retrieval
 ├── 1.5 Consolidation
 ├── 1.6 Context Budget
-└── 1.7 Data Integrity
+├── 1.7 Data Integrity
+└── 1.8 Team Manifest           (project roster convention)
 ```
 
 ## Work Packages
@@ -26,6 +27,8 @@
 | 1.1.1 | `agent.json` generation | `/agent:init` writes `agent.json` (uuid v4 + name) | File created; re-init is idempotent (keeps UUID) |
 | 1.1.2 | UUID in commits + frontmatter | git commit author `agent-<short-uuid>`; `agent_id` in frontmatter | `git log` shows agent author; new writes carry `agent_id` |
 | 1.1.3 | Runtime UUID load | Load UUID at start; null-safe | No crash when `agent.json` absent |
+| 1.1.4 | Thin org index | Locator file: name → Zone A path, UUID, status (`ephemeral | member`); written only at membership transitions | Index lists members; never duplicates identity content |
+| 1.1.5 | Temp identity state | First-class ephemeral state: temp UUID + registry row | Promotion = state flip (`ephemeral → member`), no data migration |
 
 **Depends on:** nothing. **Issue:** #7 (open).
 
@@ -86,6 +89,15 @@
 
 **Pattern reference:** Letta Code CLI's `pre-commit` hook (bash) — same checks, rebuilt for our schema as a TypeScript extension hook. **Issue:** #16 (open). **Depends on:** nothing; **feeds 1.2** (validate files pulled by sync before they land).
 
+### 1.8 Team Manifest — project roster convention
+
+| ID | Package | Deliverable | Acceptance |
+|----|---------|-------------|------------|
+| 1.8.1 | Manifest scaffold | `/memory:init` creates `.memory/team/manifest.md` (empty roster template + conventions header) for new AND existing projects; idempotent | Scaffold present after init; existing manifest never clobbered |
+| 1.8.2 | Roster-only contract | Manifest holds Role → Identity → UUID → Status only; review gates live in project planning docs, care-loop records deferred | Schema enforced by 1.7 (future); SPEC §2.8 captures the split |
+
+**Depends on:** 1.1 (manifest references UUIDs). **Issue:** #18 (open).
+
 ## Dependencies
 
 ```
@@ -93,6 +105,7 @@
 #1  ──► 1.3.3          (strict parser precedes registry.json)
 1.4.1 ─► 1.4.3         (keyword baseline before semantic layer — soft)
 1.7 ──► 1.2            (validation guards files pulled by sync)
+1.1 ──► 1.8            (manifest references agent UUIDs)
 ```
 
 Everything else is independent and can be picked up in any order.
@@ -102,8 +115,9 @@ Everything else is independent and can be picked up in any order.
 1. **Quick wins:** 1.4.1 (#2), 1.4.2 (#3), 1.6 (#6) — small, self-contained, fix daily retrieval now
 2. **Foundation:** 1.1 → 1.2 — identity, then sync
 3. **Discovery:** 1.3
-4. **Consolidation:** 1.5
-5. **Archival:** 1.4.3 — DEFERRED (future: compose with heaven-search as a sidecar)
+4. **Team manifest:** 1.8 — bootstrap the roster convention early so projects start using it
+5. **Consolidation:** 1.5
+6. **Archival:** 1.4.3 — DEFERRED (future: compose with heaven-search as a sidecar)
 
 ## Issue Map
 
@@ -111,12 +125,13 @@ Everything else is independent and can be picked up in any order.
 |-----|-------|--------|
 | 1.3.3 | #13 | open (folds #4) |
 | 1.4.1 | #2 | merged (PR #12) |
-| 1.4.2 | #3 | PR #15 (review) |
+| 1.4.2 | #3 | merged (PR #15) |
 | 1.5.2 | #5 | open |
-| 1.6.1 | #6 | PR #15 (review) |
-| 1.1.x | #7 | open |
+| 1.6.1 | #6 | merged (PR #15) |
+| 1.1.x | #7 | open (hybrid registry specced) |
 | 1.2.x | #8 | open |
 | 1.3.1/1.3.2/1.3.4 | #9 | open |
 | 1.4.3 | #10 | future |
 | 1.5.1 | #11 | open |
 | 1.7.1 | #16 | open |
+| 1.8.x | #18 | open |
