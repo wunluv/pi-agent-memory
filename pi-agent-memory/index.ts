@@ -17,6 +17,12 @@ import * as os from "node:os";
 import * as cp from "node:child_process";
 import { rankedSearch } from "./ranked-search";
 import { extractWikiLinks, findBacklinks } from "./backlinks";
+import {
+	budgetSystemInjection,
+	DEFAULT_TOKEN_BUDGET,
+	rankSystemFiles,
+	type SystemFileEntry,
+} from "./context-budget";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -416,6 +422,16 @@ function searchSessions(query: string): string {
 
 // ─── System Context Builder ───────────────────────────────────────────────────────
 
+/** Read the token budget for system/ injection (env-overridable). */
+function getTokenBudget(): number {
+	const env = process.env.PI_MEMORY_TOKEN_BUDGET;
+	if (env) {
+		const parsed = parseInt(env, 10);
+		if (!isNaN(parsed) && parsed > 0) return parsed;
+	}
+	return DEFAULT_TOKEN_BUDGET;
+}
+
 /** Build the memory system section injected into every turn */
 function buildSystemContext(): string {
 	const sysDir = getSystemDir();
@@ -423,6 +439,22 @@ function buildSystemContext(): string {
 
 	const files = collectMdFiles(sysDir);
 	if (files.length === 0) return "";
+
+	const agentRoot = getAgentMemoryRoot()!;
+	const systemRoot = path.join(agentRoot, "system");
+	const entries: SystemFileEntry[] = files.map((file) => {
+		const content = fs.readFileSync(file, "utf-8");
+		const fm = parseFrontmatter(content);
+		return {
+			relPath: path.relative(systemRoot, file).replace(/\\/g, "/"),
+			content: fm.body.trim(),
+			importance: fm.importance,
+			updated: fm.updated,
+		};
+	});
+
+	const ranked = rankSystemFiles(entries);
+	const { included, omitted } = budgetSystemInjection(ranked, getTokenBudget());
 
 	const sections: string[] = [];
 
@@ -439,13 +471,18 @@ Available tools: memory_tree, memory_read, memory_write, memory_search, memory_r
 	const systemInstructions = loadPrompt("system", fallbackSystemPrompt);
 	sections.push(`<memory_system>\n\n${systemInstructions}`);
 
-	// Inject system/ data
-	for (const file of files) {
-		const content = fs.readFileSync(file, "utf-8");
-		const fm = parseFrontmatter(content);
-		const relPath = path.relative(path.join(getAgentMemoryRoot()!, "system"), file);
-		sections.push(`\n=== system/${relPath} ===`);
-		sections.push(fm.body.trim());
+	// Inject system/ data, budgeted by importance + recency
+	for (const f of included) {
+		sections.push(`\n=== system/${f.relPath} ===`);
+		sections.push(f.content);
+	}
+
+	if (omitted.length > 0) {
+		sections.push(
+			`\n[${omitted.length} system file(s) omitted by token budget: ${omitted
+				.map((f) => `system/${f.relPath}`)
+				.join(", ")}. Reachable via memory_read().]`,
+		);
 	}
 
 	sections.push("</memory_system>");
