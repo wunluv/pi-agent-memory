@@ -16,6 +16,13 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as cp from "node:child_process";
 import { rankedSearch } from "./ranked-search";
+import { extractWikiLinks, findBacklinks } from "./backlinks";
+import {
+	budgetSystemInjection,
+	DEFAULT_TOKEN_BUDGET,
+	rankSystemFiles,
+	type SystemFileEntry,
+} from "./context-budget";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -239,17 +246,6 @@ function generateFrontmatter(description: string, tags: string[], importance: nu
 	return lines.join("\n");
 }
 
-/** Extract [[wiki-links]] from markdown body */
-function extractWikiLinks(body: string): string[] {
-	const links: string[] = [];
-	const re = /\[\[([^\]]+)\]\]/g;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(body)) !== null) {
-		links.push(m[1]);
-	}
-	return links;
-}
-
 /** Build a formatted tree view for a directory under a given root */
 function buildTreeView(dirPath: string, root: string): string {
 	const targetDir = dirPath ? path.join(root, dirPath) : root;
@@ -310,6 +306,12 @@ function buildTreeView(dirPath: string, root: string): string {
 function formatWikiLinks(links: string[]): string {
 	if (links.length === 0) return "";
 	return "\n\n\u{1F517} [[links]] found:\n" + links.map((l) => `  \u2192 [[${l}]]`).join("\n");
+}
+
+/** Format backlinks (files that reference this one) for display */
+function formatBacklinks(backlinks: string[]): string {
+	if (backlinks.length === 0) return "";
+	return "\n\n\u2B05 referenced by:\n" + backlinks.map((b) => `  \u2190 ${b}`).join("\n");
 }
 
 // ─── Git Helpers ──────────────────────────────────────────────────────────────────
@@ -420,6 +422,16 @@ function searchSessions(query: string): string {
 
 // ─── System Context Builder ───────────────────────────────────────────────────────
 
+/** Read the token budget for system/ injection (env-overridable). */
+function getTokenBudget(): number {
+	const env = process.env.PI_MEMORY_TOKEN_BUDGET;
+	if (env) {
+		const parsed = parseInt(env, 10);
+		if (!isNaN(parsed) && parsed > 0) return parsed;
+	}
+	return DEFAULT_TOKEN_BUDGET;
+}
+
 /** Build the memory system section injected into every turn */
 function buildSystemContext(): string {
 	const sysDir = getSystemDir();
@@ -427,6 +439,22 @@ function buildSystemContext(): string {
 
 	const files = collectMdFiles(sysDir);
 	if (files.length === 0) return "";
+
+	const agentRoot = getAgentMemoryRoot()!;
+	const systemRoot = path.join(agentRoot, "system");
+	const entries: SystemFileEntry[] = files.map((file) => {
+		const content = fs.readFileSync(file, "utf-8");
+		const fm = parseFrontmatter(content);
+		return {
+			relPath: path.relative(systemRoot, file).replace(/\\/g, "/"),
+			content: fm.body.trim(),
+			importance: fm.importance,
+			updated: fm.updated,
+		};
+	});
+
+	const ranked = rankSystemFiles(entries);
+	const { included, omitted } = budgetSystemInjection(ranked, getTokenBudget());
 
 	const sections: string[] = [];
 
@@ -443,13 +471,18 @@ Available tools: memory_tree, memory_read, memory_write, memory_search, memory_r
 	const systemInstructions = loadPrompt("system", fallbackSystemPrompt);
 	sections.push(`<memory_system>\n\n${systemInstructions}`);
 
-	// Inject system/ data
-	for (const file of files) {
-		const content = fs.readFileSync(file, "utf-8");
-		const fm = parseFrontmatter(content);
-		const relPath = path.relative(path.join(getAgentMemoryRoot()!, "system"), file);
-		sections.push(`\n=== system/${relPath} ===`);
-		sections.push(fm.body.trim());
+	// Inject system/ data, budgeted by importance + recency
+	for (const f of included) {
+		sections.push(`\n=== system/${f.relPath} ===`);
+		sections.push(f.content);
+	}
+
+	if (omitted.length > 0) {
+		sections.push(
+			`\n[${omitted.length} system file(s) omitted by token budget: ${omitted
+				.map((f) => `system/${f.relPath}`)
+				.join(", ")}. Reachable via memory_read().]`,
+		);
 	}
 
 	sections.push("</memory_system>");
@@ -528,10 +561,12 @@ export default function (pi: ExtensionAPI) {
 			}
 			const fm = parseFrontmatter(content);
 			const links = extractWikiLinks(fm.body);
+			const backlinks = findBacklinks(params.path, root, { collectMdFiles });
 			const linkText = formatWikiLinks(links);
+			const backlinkText = formatBacklinks(backlinks);
 			return {
-				content: [{ type: "text", text: content + linkText }],
-				details: { path: params.path, links, description: fm.description, importance: fm.importance },
+				content: [{ type: "text", text: content + linkText + backlinkText }],
+				details: { path: params.path, links, backlinks, description: fm.description, importance: fm.importance },
 			};
 		},
 	});
@@ -1140,10 +1175,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 			const fm = parseFrontmatter(content);
 			const links = extractWikiLinks(fm.body);
+			const backlinks = findBacklinks(filePath, root, { collectMdFiles });
 			const display = content.length > 1000 ? content.slice(0, 1000) + "\n\n...(truncated)..." : content;
 			ctx.ui.notify(display, "info");
 			if (links.length > 0) {
 				ctx.ui.notify(`\u{1F517} Links: ${links.join(", ")}`, "info");
+			}
+			if (backlinks.length > 0) {
+				ctx.ui.notify(`\u2B05 referenced by: ${backlinks.join(", ")}`, "info");
 			}
 		},
 	});
