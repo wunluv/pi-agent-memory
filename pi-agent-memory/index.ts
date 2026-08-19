@@ -15,7 +15,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as cp from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { rankedSearch } from "./ranked-search";
 import { extractWikiLinks, findBacklinks } from "./backlinks";
 import {
@@ -24,6 +23,14 @@ import {
 	rankSystemFiles,
 	type SystemFileEntry,
 } from "./context-budget";
+import {
+	configureRepoAuthor,
+	ensureAgentIdentity,
+	loadAgentIdentity,
+	loadOrgRegistry,
+	saveOrgRegistry,
+	type IdentityEnv,
+} from "./identity";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -32,7 +39,6 @@ const ACTIVE_FILE = path.join(AGENTS_DIR, "active");
 const SESSIONS_DIR = path.join(os.homedir(), ".pi", "agent", "sessions");
 const PROMPTS_DIR = path.join(__dirname, "prompts");
 const ORG_ROOT = path.join(os.homedir(), ".pi", "org");
-const ORG_REGISTRY = path.join(ORG_ROOT, "registry.json");
 
 // ─── State ────────────────────────────────────────────────────────────────────────
 
@@ -337,12 +343,16 @@ function git(args: string[], cwd: string): { stdout: string; stderr: string; cod
 	}
 }
 
+// Identity + org-registry env — DI so identity.ts stays testable and free of
+// module-global git state. agentsDir/orgRoot are the live pi locations.
+const identityEnv: IdentityEnv = { agentsDir: AGENTS_DIR, orgRoot: ORG_ROOT, git };
+
 /** Initialize a git repo at the given path */
 function initGitRepo(repoPath: string): boolean {
 	fs.mkdirSync(repoPath, { recursive: true });
 	const r = git(["init"], repoPath);
 	if (r.code !== 0) return false;
-	configureRepoAuthor(repoPath);
+	configureRepoAuthor(identityEnv, repoPath, agentUuid);
 	return true;
 }
 
@@ -360,204 +370,10 @@ function isGitRepo(repoPath: string): boolean {
 	return fs.existsSync(path.join(repoPath, ".git"));
 }
 
-// ─── Identity & Org Registry ─────────────────────────────────────────────────────
-
-/** Short form of a UUID for display and commit author names. */
-function shortUuid(uuid: string): string {
-	return uuid.slice(0, 8);
-}
-
-/** Load the agent's identity (uuid) from agent.json in its Zone A root. Null-safe. */
-function loadAgentIdentity(agentName: string | null): string | null {
-	if (!agentName) return null;
-	try {
-		const file = path.join(AGENTS_DIR, agentName, "memory", "agent.json");
-		if (!fs.existsSync(file)) return null;
-		const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
-		return typeof parsed.uuid === "string" && parsed.uuid ? parsed.uuid : null;
-	} catch {
-		return null;
-	}
-}
-
 /** Set the active agent and load its identity. */
 function setActiveAgent(name: string): void {
 	activeAgent = name;
-	agentUuid = loadAgentIdentity(name);
-}
-
-/** Set repo-local git author from the active identity; fall back to defaults. */
-function configureRepoAuthor(repoPath: string): void {
-	if (agentUuid) {
-		git(["config", "user.name", `agent-${shortUuid(agentUuid)}`], repoPath);
-		git(["config", "user.email", `${agentUuid}@pi.local`], repoPath);
-	} else {
-		git(["config", "user.email", "agent-memory@pi"], repoPath);
-		git(["config", "user.name", "Agent Memory"], repoPath);
-	}
-}
-
-/** Run git with the acting agent as author (for shared repos like the org root). */
-function gitAs(args: string[], cwd: string, uuid: string | null): { stdout: string; stderr: string; code: number } {
-	const prefix = uuid ? ["-c", `user.name=agent-${shortUuid(uuid)}`, "-c", `user.email=${uuid}@pi.local`] : [];
-	return git([...prefix, ...args], cwd);
-}
-
-interface OrgRegistry {
-	version: number;
-	updated: string;
-	projects: Record<string, unknown>;
-	members: Record<string, { name: string; uuid: string; status: "ephemeral" | "member"; memoryPath: string }>;
-}
-
-/** Bootstrap the shared org root (~/.pi/org/) if missing. Idempotent. */
-function ensureOrgRoot(uuid: string | null): boolean {
-	try {
-		if (!fs.existsSync(ORG_ROOT)) {
-			fs.mkdirSync(path.join(ORG_ROOT, "roles"), { recursive: true });
-			fs.writeFileSync(
-				path.join(ORG_ROOT, "README.md"),
-				`# Org Root\n\nShared org-layer memory at ~/.pi/org/. Single-writer convention: registry.json is an aggregate file touched only at gated transitions (recruitment, promotion, project moves).\n\n- \`registry.json\` — \`projects\` (name → path) + \`members\` (name → identity)\n- \`roles/\` — shared role specs, evolved by their wearers\n`,
-			);
-			const skeleton: OrgRegistry = { version: 1, updated: new Date().toISOString().split("T")[0], projects: {}, members: {} };
-			fs.writeFileSync(ORG_REGISTRY, JSON.stringify(skeleton, null, 2) + "\n", "utf-8");
-		}
-		if (!isGitRepo(ORG_ROOT)) {
-			initGitRepo(ORG_ROOT);
-			gitAs(["add", "-A"], ORG_ROOT, uuid);
-			gitAs(["commit", "-m", "org: bootstrap org root (registry, roles, README)"], ORG_ROOT, uuid);
-		}
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** Load the org registry; return a fresh skeleton when missing or corrupt. */
-function loadOrgRegistry(): OrgRegistry {
-	try {
-		if (fs.existsSync(ORG_REGISTRY)) {
-			const parsed = JSON.parse(fs.readFileSync(ORG_REGISTRY, "utf-8"));
-			if (parsed && typeof parsed === "object" && typeof parsed.members === "object" && parsed.members) {
-				return parsed as OrgRegistry;
-			}
-		}
-	} catch {
-		// fall through to skeleton
-	}
-	return { version: 1, updated: new Date().toISOString().split("T")[0], projects: {}, members: {} };
-}
-
-/** Persist the registry and commit it in the org root repo. */
-function saveOrgRegistry(reg: OrgRegistry, uuid: string | null): boolean {
-	try {
-		reg.updated = new Date().toISOString().split("T")[0];
-		fs.writeFileSync(ORG_REGISTRY, JSON.stringify(reg, null, 2) + "\n", "utf-8");
-		const staged = git(["status", "--porcelain"], ORG_ROOT);
-		if (staged.stdout.trim()) {
-			gitAs(["add", ORG_REGISTRY], ORG_ROOT, uuid);
-			gitAs(["commit", "-m", "org: update registry"], ORG_ROOT, uuid);
-		}
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** Upsert a member row in the org registry (thin index — identity content stays in agent.json). */
-function registerMember(name: string, uuid: string, status: "ephemeral" | "member"): boolean {
-	if (!ensureOrgRoot(uuid)) return false;
-	const reg = loadOrgRegistry();
-	reg.members[name] = { name, uuid, status, memoryPath: `~/.pi/agents/${name}/memory` };
-	return saveOrgRegistry(reg, uuid);
-}
-
-/** Strip Letta-era cruft (hooks, config, remotes) from an existing memory repo. Idempotent. */
-function stripLegacyCruft(memoryRoot: string): void {
-	// Letta hooks: pre-commit rejects our frontmatter schema; post-commit pushes to the dead memfs server
-	for (const hook of ["pre-commit", "post-commit"]) {
-		const p = path.join(memoryRoot, ".git", "hooks", hook);
-		if (fs.existsSync(p)) fs.rmSync(p);
-	}
-	// Letta config section + any credential helpers in repo-local config
-	git(["config", "--remove-section", "letta"], memoryRoot);
-	const cred = git(["config", "--local", "--get-regexp", "^credential\\."], memoryRoot);
-	for (const line of cred.stdout.split("\n").filter(Boolean)) {
-		const key = line.split(" ")[0];
-		if (key) git(["config", "--unset-all", key], memoryRoot);
-	}
-	// Letta-era remotes: origin (dead memfs URL) and github (letta backup)
-	for (const remote of ["origin", "github"]) {
-		const url = git(["remote", "get-url", remote], memoryRoot).stdout.trim();
-		if (url) git(["remote", "remove", remote], memoryRoot);
-	}
-}
-
-/**
- * Ensure an agent has identity + a clean, committed repo. Shared by /agent:init
- * and the session_start auto-backfill. Idempotent: UUID kept, Letta cruft
- * stripped, accumulated memory committed (catch-up), member registered.
- * Returns a summary for notification, or null on failure.
- */
-function ensureAgentIdentity(name: string, isNew: boolean): { uuid: string; isNew: boolean; kept: boolean; caughtUp: boolean; registered: boolean; status: "ephemeral" | "member" } | null {
-	try {
-		const agentDir = path.join(AGENTS_DIR, name);
-		const memoryRoot = path.join(agentDir, "memory");
-		const agentJsonPath = path.join(memoryRoot, "agent.json");
-
-		// Identity: keep existing UUID (idempotent, never regenerated),
-		// backfill legacy agents (no agent.json), create for new agents.
-		let uuid: string | null = null;
-		let status: "ephemeral" | "member" = "ephemeral";
-		if (fs.existsSync(agentJsonPath)) {
-			try {
-				const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"));
-				uuid = typeof parsed.uuid === "string" && parsed.uuid ? parsed.uuid : null;
-				status = parsed.status === "member" ? "member" : "ephemeral";
-			} catch {
-				// corrupt agent.json → regenerate below
-			}
-		}
-		const kept = !!uuid;
-		if (!uuid) {
-			uuid = randomUUID();
-			fs.mkdirSync(memoryRoot, { recursive: true });
-		}
-
-		// Agent's own repo: clean, then authored as agent-<short-uuid>
-		if (!isGitRepo(memoryRoot)) initGitRepo(memoryRoot);
-		stripLegacyCruft(memoryRoot); // remove Letta hooks/config/remotes (idempotent)
-		git(["config", "user.name", `agent-${shortUuid(uuid)}`], memoryRoot);
-		git(["config", "user.email", `${uuid}@pi.local`], memoryRoot);
-
-		// agent.json — stable identity (UUID kept, never regenerated)
-		fs.writeFileSync(agentJsonPath, JSON.stringify({ uuid, name, status }, null, 2) + "\n", "utf-8");
-
-		// Commit; skip when nothing changed (idempotent re-init).
-		// Backfill path: accumulated memory lands in its own catch-up commit first.
-		let caughtUp = false;
-		git(["add", "-A"], memoryRoot);
-		const staged = git(["status", "--porcelain"], memoryRoot);
-		if (staged.stdout.trim()) {
-			if (!isNew) {
-				git(["restore", "--staged", "agent.json"], memoryRoot);
-				const memoryOnly = git(["status", "--porcelain"], memoryRoot).stdout.trim();
-				if (memoryOnly) {
-					git(["commit", "-m", "memory: catch-up commit (accumulated agent memory)"], memoryRoot);
-					caughtUp = true;
-				}
-				git(["add", "agent.json"], memoryRoot);
-			}
-			git(["commit", "-m", isNew ? `init: Agent "${name}" memory system setup` : `identity: backfill agent.json for ${name}`], memoryRoot);
-		}
-
-		// Org registry: member row; /agent:promote flips ephemeral → member
-		const registered = registerMember(name, uuid, status);
-
-		return { uuid, isNew, kept, caughtUp, registered, status };
-	} catch {
-		return null;
-	}
+	agentUuid = loadAgentIdentity(identityEnv, name);
 }
 
 /** Search session history */
@@ -701,7 +517,7 @@ Available tools: memory_tree, memory_read, memory_write, memory_search, memory_r
 export default function (pi: ExtensionAPI) {
 	// Restore active agent + identity
 	activeAgent = loadActiveAgent();
-	agentUuid = loadAgentIdentity(activeAgent);
+	agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 
 	// ─── Tools ──────────────────────────────────────────────────────────────────
 
@@ -1028,7 +844,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 
 			// Identity + clean repo + registry (shared with session_start auto-backfill)
-			const result = ensureAgentIdentity(name, isNew);
+			const result = ensureAgentIdentity(identityEnv, name, isNew);
 			if (!result) {
 				ctx.ui.notify(`Failed to initialize agent "${name}".`, "warning");
 				return;
@@ -1056,7 +872,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 
-			const reg = loadOrgRegistry();
+			const reg = loadOrgRegistry(identityEnv);
 			const member = reg.members[name];
 			if (!member) {
 				ctx.ui.notify(`Agent "${name}" not in org registry. Run /agent:init ${name} first.`, "warning");
@@ -1069,7 +885,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			// Registry is the source of truth; agent.json mirrors the flip
 			member.status = "member";
-			if (saveOrgRegistry(reg, agentUuid)) {
+			if (saveOrgRegistry(identityEnv, reg, agentUuid)) {
 				const agentJsonPath = path.join(AGENTS_DIR, name, "memory", "agent.json");
 				try {
 					const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"));
@@ -1505,14 +1321,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 	pi.on("session_start", async (_event, ctx) => {
 		activeAgent = loadActiveAgent();
-		agentUuid = loadAgentIdentity(activeAgent);
+		agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
 
 		// Auto-backfill: a legacy agent (no identity yet) gets cleaned and
 		// identified on load. Idempotent, one-time per agent; covers pi restart
 		// and /reload so the last-used agent's memory loads cleanly.
 		if (activeAgent && !agentUuid) {
-			const result = ensureAgentIdentity(activeAgent, false);
+			const result = ensureAgentIdentity(identityEnv, activeAgent, false);
 			if (result) {
 				agentUuid = result.uuid;
 				ctx.ui.notify(
