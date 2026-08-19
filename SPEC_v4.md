@@ -461,6 +461,7 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 - `/agent:pull [uuid]` — pure `git clone`, agent name read from `agent.json` in the clone
 - `memory_sync_config` tool — get/set `push_on_commit`, `pull_on_start`
 - `session_start` auto-pull — 2–3s fail-fast, continue on local state
+- **Reference:** Letta Code CLI's `post-commit` hook (backgrounded subshell, logged to `memory-repository-push.log`, always exit 0) — see issue #8
 
 ### 2.3 Root Resolution & Discovery
 
@@ -483,6 +484,11 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 ### 2.6 Context Budget
 
 - Token cap for `system/` injection, ranked by importance + recency — issue #6
+
+### 2.7 Data Integrity — frontmatter validation
+
+- `beforeMemoryWrite` hook — schema validation (required `description`, known keys, sane types) + protected `read_only` field (human-owned, agent can't set/change/remove) — issue #16
+- Pattern: Letta's `pre-commit` hook, rebuilt for our schema as a TypeScript extension hook (not a git hook)
 
 ### Still out of scope
 

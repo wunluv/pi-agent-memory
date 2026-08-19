@@ -13,7 +13,8 @@
 ├── 1.3 Root Resolution & Discovery
 ├── 1.4 Retrieval
 ├── 1.5 Consolidation
-└── 1.6 Context Budget
+├── 1.6 Context Budget
+└── 1.7 Data Integrity
 ```
 
 ## Work Packages
@@ -77,12 +78,21 @@
 
 **Issue:** #6 (open).
 
+### 1.7 Data Integrity — frontmatter validation
+
+| ID | Package | Deliverable | Acceptance |
+|----|---------|-------------|------------|
+| 1.7.1 | `beforeMemoryWrite` validation hook | Frontmatter schema + protected-field guard on every write | Malformed frontmatter (missing/unclosed, unknown key, empty description, bad `importance`, `read_only` set/change/remove) rejected before write |
+
+**Pattern reference:** Letta Code CLI's `pre-commit` hook (bash) — same checks, rebuilt for our schema as a TypeScript extension hook. **Issue:** #16 (open). **Depends on:** nothing; **feeds 1.2** (validate files pulled by sync before they land).
+
 ## Dependencies
 
 ```
 1.1 ──► 1.2            (sync commits carry agent UUID)
 #1  ──► 1.3.3          (strict parser precedes registry.json)
 1.4.1 ─► 1.4.3         (keyword baseline before semantic layer — soft)
+1.7 ──► 1.2            (validation guards files pulled by sync)
 ```
 
 Everything else is independent and can be picked up in any order.
@@ -100,12 +110,13 @@ Everything else is independent and can be picked up in any order.
 | WBS | Issue | Status |
 |-----|-------|--------|
 | 1.3.3 | #13 | open (folds #4) |
-| 1.4.1 | #2 | open |
-| 1.4.2 | #3 | open |
+| 1.4.1 | #2 | merged (PR #12) |
+| 1.4.2 | #3 | PR #15 (review) |
 | 1.5.2 | #5 | open |
-| 1.6.1 | #6 | open |
+| 1.6.1 | #6 | PR #15 (review) |
 | 1.1.x | #7 | open |
 | 1.2.x | #8 | open |
 | 1.3.1/1.3.2/1.3.4 | #9 | open |
 | 1.4.3 | #10 | future |
 | 1.5.1 | #11 | open |
+| 1.7.1 | #16 | open |
