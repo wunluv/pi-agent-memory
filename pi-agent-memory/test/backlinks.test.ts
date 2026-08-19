@@ -79,4 +79,27 @@ assert.ok(!expected.includes("reference/heavencrm/status.md"));
 // no one links to persona → empty
 assert.deepEqual(findBacklinks("system/persona.md", dir, deps), []);
 
+// ─── Ambiguous bare-name links are NOT credited ─────────────────────────────
+
+function makeAmbiguousCorpus(): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backlinks-amb-"));
+	const write = (rel: string, body: string) => {
+		const full = path.join(dir, rel);
+		fs.mkdirSync(path.dirname(full), { recursive: true });
+		fs.writeFileSync(full, body);
+	};
+	write("reference/heavencrm/status.md", "# A\n");
+	write("reference/xlearn/status.md", "# B\n");
+	write("reference/index.md", "# I\n\n[[status]]\n"); // ambiguous bare link
+	write("reference/notes.md", "# N\n\n[[reference/heavencrm/status]]\n"); // exact link
+	return dir;
+}
+
+const amb = makeAmbiguousCorpus();
+
+// "status" is shared by two files → bare [[status]] is ambiguous, not credited;
+// the exact link still resolves.
+assert.deepEqual(findBacklinks("reference/heavencrm/status.md", amb, deps), ["reference/notes.md"]);
+assert.deepEqual(findBacklinks("reference/xlearn/status.md", amb, deps), []);
+
 console.log("backlinks.test.ts — all assertions passed");

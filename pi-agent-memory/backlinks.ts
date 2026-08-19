@@ -66,8 +66,21 @@ export function findBacklinks(
 	const target = normalizeWikiTarget(targetPath);
 	if (!target) return [];
 
+	const files = deps.collectMdFiles(root);
+	const rels = files.map((f) => path.relative(root, f).replace(/\\/g, "/"));
+
+	// A bare [[name]] link (no directory) is ambiguous when several files share
+	// that basename — e.g. status.md, WIP.md, WBS.md appear in every project.
+	// Only honor a bare-name suffix match when the basename uniquely identifies
+	// the target. Exact root-relative links and directory-qualified suffixes
+	// are always honored (they carry enough context to be unambiguous).
+	const targetBasename = target.split("/").pop() ?? "";
+	const bareUnique =
+		targetBasename !== "" &&
+		rels.filter((r) => normalizeWikiTarget(r).split("/").pop() === targetBasename).length === 1;
+
 	const backlinks: string[] = [];
-	for (const file of deps.collectMdFiles(root)) {
+	for (const file of files) {
 		const rel = path.relative(root, file).replace(/\\/g, "/");
 		if (normalizeWikiTarget(rel) === target) continue; // self-reference — skip
 
@@ -81,7 +94,10 @@ export function findBacklinks(
 		for (const link of extractWikiLinks(content)) {
 			const normalized = normalizeWikiTarget(link);
 			if (!normalized) continue;
-			if (normalized === target || target.endsWith("/" + normalized)) {
+			const exact = normalized === target;
+			const bare = !normalized.includes("/");
+			const suffix = target.endsWith("/" + normalized) && (!bare || bareUnique);
+			if (exact || suffix) {
 				backlinks.push(rel);
 				break; // one hit per file is enough
 			}
