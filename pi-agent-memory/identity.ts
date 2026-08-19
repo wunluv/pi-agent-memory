@@ -95,6 +95,7 @@ export function ensureOrgRoot(env: IdentityEnv, uuid: string | null): boolean {
 		const registry = path.join(env.orgRoot, "registry.json");
 		if (!fs.existsSync(env.orgRoot)) {
 			fs.mkdirSync(path.join(env.orgRoot, "roles"), { recursive: true });
+			fs.writeFileSync(path.join(env.orgRoot, "roles", ".gitkeep"), "");
 			fs.writeFileSync(
 				path.join(env.orgRoot, "README.md"),
 				`# Org Root\n\nShared org-layer memory at ~/.pi/org/. Single-writer convention: registry.json is an aggregate file touched only at gated transitions (recruitment, promotion, project moves).\n\n- \`registry.json\` — \`projects\` (name → path) + \`members\` (name → identity)\n- \`roles/\` — shared role specs, evolved by their wearers\n`,
