@@ -15,6 +15,9 @@ import {
 	shortUuid,
 	loadAgentIdentity,
 	loadOrgRegistry,
+	lookupProject,
+	registerProject,
+	resolveProjectName,
 	saveOrgRegistry,
 	ensureAgentIdentity,
 	type IdentityEnv,
@@ -192,6 +195,32 @@ assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
 	const env = makeEnv();
 	assert.equal(loadAgentIdentity(env, null), null);
 	assert.equal(loadAgentIdentity(env, "does-not-exist"), null);
+}
+
+// ─── resolveProjectName ────────────────────────────────────────────────────────
+
+{
+	const env = makeEnv();
+	const mem = path.join(env.agentsDir, "proj", "memory");
+	fs.mkdirSync(path.join(mem, "reference"), { recursive: true });
+	fs.writeFileSync(path.join(mem, "reference", "status.md"), "# My Project — Status\n\nbody");
+	assert.equal(resolveProjectName(mem), "My Project", "H1 from status.md");
+
+	const mem2 = path.join(env.agentsDir, "fallback", "memory");
+	fs.mkdirSync(mem2, { recursive: true });
+	assert.equal(resolveProjectName(mem2), "fallback", "basename fallback when no status.md");
+}
+
+// ─── project registry round-trip (authoritative name → path) ────────────────────
+
+{
+	const env = makeEnv();
+	assert.equal(lookupProject(env, "unknown"), null);
+	assert.ok(registerProject(env, "bttn", "/abs/path/bttn", null));
+	assert.equal(lookupProject(env, "bttn"), "/abs/path/bttn");
+	// reconcile (re-register) updates the path
+	assert.ok(registerProject(env, "bttn", "/new/path/bttn", null));
+	assert.equal(lookupProject(env, "bttn"), "/new/path/bttn");
 }
 
 console.log("identity.test.ts — all assertions passed");

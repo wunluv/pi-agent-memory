@@ -28,7 +28,7 @@ export interface IdentityEnv {
 export interface OrgRegistry {
 	version: number;
 	updated: string;
-	projects: Record<string, unknown>;
+	projects: Record<string, string>; // name → absolute project path (authoritative, #13)
 	members: Record<string, { name: string; uuid: string; status: "ephemeral" | "member"; memoryPath: string }>;
 }
 
@@ -121,6 +121,7 @@ export function loadOrgRegistry(env: IdentityEnv): OrgRegistry {
 		if (fs.existsSync(registry)) {
 			const parsed = JSON.parse(fs.readFileSync(registry, "utf-8"));
 			if (parsed && typeof parsed === "object" && typeof parsed.members === "object" && parsed.members) {
+				if (!parsed.projects || typeof parsed.projects !== "object") parsed.projects = {}; // normalize pre-#13 registries
 				return parsed as OrgRegistry;
 			}
 		}
@@ -153,6 +154,42 @@ export function registerMember(env: IdentityEnv, name: string, uuid: string, sta
 	const reg = loadOrgRegistry(env);
 	reg.members[name] = { name, uuid, status, memoryPath: `~/.pi/agents/${name}/memory` };
 	return saveOrgRegistry(env, reg, uuid);
+}
+
+/** Upsert a project row (name → absolute path) in the org registry. Authoritative (#13). */
+export function registerProject(env: IdentityEnv, name: string, projectPath: string, uuid: string | null): boolean {
+	if (!ensureOrgRoot(env, uuid)) return false;
+	const reg = loadOrgRegistry(env);
+	reg.projects[name] = projectPath;
+	return saveOrgRegistry(env, reg, uuid);
+}
+
+/** Look up a project's path in the org registry. Null if unknown. */
+export function lookupProject(env: IdentityEnv, name: string): string | null {
+	const reg = loadOrgRegistry(env);
+	const p = reg.projects[name];
+	return typeof p === "string" && p ? p : null;
+}
+
+/**
+ * Derive a project name from its .memory/: reference/status.md H1 ("# Name — Status"),
+ * falling back to the parent directory basename. Heuristic — the caller gates on it.
+ */
+export function resolveProjectName(memoryPath: string): string {
+	try {
+		const statusPath = path.join(memoryPath, "reference", "status.md");
+		if (fs.existsSync(statusPath)) {
+			const content = fs.readFileSync(statusPath, "utf-8");
+			const h1 = content.match(/^#\s+(.+)$/m);
+			if (h1) {
+				const name = h1[1].replace(/\s*—.*$/, "").trim();
+				if (name) return name;
+			}
+		}
+	} catch {
+		// fall through to basename
+	}
+	return path.basename(path.dirname(memoryPath));
 }
 
 /** Strip Letta-era cruft (hooks, config, remotes) from an existing memory repo. Idempotent. */
