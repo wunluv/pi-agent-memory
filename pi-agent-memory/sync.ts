@@ -110,7 +110,8 @@ export function parseSshRemote(url: string): { host: string; repoPath: string } 
 		const rest = url.slice("ssh://".length);
 		const slash = rest.indexOf("/");
 		if (slash === -1) return null;
-		return { host: rest.slice(0, slash), repoPath: rest.slice(slash + 1) };
+		// ssh:// paths are absolute on the remote — preserve the leading slash.
+		return { host: rest.slice(0, slash), repoPath: rest.slice(slash) };
 	}
 	if (!url.includes("://") && url.includes(":")) {
 		const colon = url.indexOf(":");

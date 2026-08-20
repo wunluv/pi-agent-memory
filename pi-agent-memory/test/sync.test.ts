@@ -91,8 +91,10 @@ function commit(cwd: string, file: string, content: string, message: string): vo
 	assert.equal(agentRepoUrl("ssh://host/mem", "abc"), "ssh://host/mem/abc.git");
 	assert.equal(agentRepoUrl("ssh://host/mem/", "abc"), "ssh://host/mem/abc.git");
 
-	assert.deepEqual(parseSshRemote("ssh://host/mem"), { host: "host", repoPath: "mem" });
+	assert.deepEqual(parseSshRemote("ssh://host/mem"), { host: "host", repoPath: "/mem" });
+	assert.deepEqual(parseSshRemote("ssh://mojah2/var/www/private/pi-agent-memory"), { host: "mojah2", repoPath: "/var/www/private/pi-agent-memory" });
 	assert.deepEqual(parseSshRemote("git@host:mem/x.git"), { host: "git@host", repoPath: "mem/x.git" });
+	assert.deepEqual(parseSshRemote("mojah2:/var/www/private/x.git"), { host: "mojah2", repoPath: "/var/www/private/x.git" });
 	assert.equal(parseSshRemote("https://host/x"), null);
 
 	assert.equal(localRemotePath("/tmp/x.git"), "/tmp/x.git");
@@ -237,7 +239,7 @@ function commit(cwd: string, file: string, content: string, message: string): vo
 	}) as any;
 
 	assert.equal(provisionRemote(env, "ssh://host/mem/repo.git"), true);
-	assert.deepEqual(sshArgs, ["host", "git init --bare mem/repo.git"]);
+	assert.deepEqual(sshArgs, ["host", "git init --bare /mem/repo.git"]);
 }
 
 // ─── pushAsync spawns a detached child with the right env ───────────────────────
