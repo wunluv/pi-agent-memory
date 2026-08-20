@@ -23,6 +23,14 @@ import {
 	rankSystemFiles,
 	type SystemFileEntry,
 } from "./context-budget";
+import {
+	configureRepoAuthor,
+	ensureAgentIdentity,
+	loadAgentIdentity,
+	loadOrgRegistry,
+	saveOrgRegistry,
+	type IdentityEnv,
+} from "./identity";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -30,10 +38,12 @@ const AGENTS_DIR = path.join(os.homedir(), ".pi", "agents");
 const ACTIVE_FILE = path.join(AGENTS_DIR, "active");
 const SESSIONS_DIR = path.join(os.homedir(), ".pi", "agent", "sessions");
 const PROMPTS_DIR = path.join(__dirname, "prompts");
+const ORG_ROOT = path.join(os.homedir(), ".pi", "org");
 
 // ─── State ────────────────────────────────────────────────────────────────────────
 
 let activeAgent: string | null = null;
+let agentUuid: string | null = null;
 let sessionMemoryRoot: string | null = null;
 
 // ─── Prompt Loading ───────────────────────────────────────────────────────────────
@@ -204,6 +214,7 @@ function parseFrontmatter(content: string): {
 		tags: [] as string[],
 		created: "",
 		updated: "",
+		agentId: "",
 		body: content,
 	};
 
@@ -229,6 +240,8 @@ function parseFrontmatter(content: string): {
 			result.created = trimmed.slice("created:".length).trim();
 		} else if (trimmed.startsWith("updated:")) {
 			result.updated = trimmed.slice("updated:".length).trim();
+		} else if (trimmed.startsWith("agent_id:")) {
+			result.agentId = trimmed.slice("agent_id:".length).trim();
 		}
 	}
 
@@ -236,12 +249,13 @@ function parseFrontmatter(content: string): {
 }
 
 /** Generate frontmatter string */
-function generateFrontmatter(description: string, tags: string[], importance: number): string {
+function generateFrontmatter(description: string, tags: string[], importance: number, agentId?: string | null): string {
 	const now = new Date().toISOString().split("T")[0];
 	const lines = ["---", `description: "${description}"`, `importance: ${importance}`];
 	if (tags.length > 0) {
 		lines.push(`tags: [${tags.map((t) => `"${t}"`).join(", ")}]`);
 	}
+	if (agentId) lines.push(`agent_id: ${agentId}`);
 	lines.push(`created: ${now}`, `updated: ${now}`, "---\n");
 	return lines.join("\n");
 }
@@ -329,13 +343,16 @@ function git(args: string[], cwd: string): { stdout: string; stderr: string; cod
 	}
 }
 
+// Identity + org-registry env — DI so identity.ts stays testable and free of
+// module-global git state. agentsDir/orgRoot are the live pi locations.
+const identityEnv: IdentityEnv = { agentsDir: AGENTS_DIR, orgRoot: ORG_ROOT, git };
+
 /** Initialize a git repo at the given path */
 function initGitRepo(repoPath: string): boolean {
 	fs.mkdirSync(repoPath, { recursive: true });
 	const r = git(["init"], repoPath);
 	if (r.code !== 0) return false;
-	git(["config", "user.email", "agent-memory@pi"], repoPath);
-	git(["config", "user.name", "Agent Memory"], repoPath);
+	configureRepoAuthor(identityEnv, repoPath, agentUuid);
 	return true;
 }
 
@@ -351,6 +368,12 @@ function gitCommit(filePath: string, message: string, root: string): boolean {
 /** Check if a path is a git repo */
 function isGitRepo(repoPath: string): boolean {
 	return fs.existsSync(path.join(repoPath, ".git"));
+}
+
+/** Set the active agent and load its identity. */
+function setActiveAgent(name: string): void {
+	activeAgent = name;
+	agentUuid = loadAgentIdentity(identityEnv, name);
 }
 
 /** Search session history */
@@ -492,8 +515,9 @@ Available tools: memory_tree, memory_read, memory_write, memory_search, memory_r
 // ─── Extension Entry Point ────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	// Restore active agent
+	// Restore active agent + identity
 	activeAgent = loadActiveAgent();
+	agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 
 	// ─── Tools ──────────────────────────────────────────────────────────────────
 
@@ -605,7 +629,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const tags = params.tags || [];
 			const importance = params.importance ?? 3;
-			const frontmatter = generateFrontmatter(params.description, tags, importance);
+			const frontmatter = generateFrontmatter(params.description, tags, importance, agentUuid);
 			const fullContent = frontmatter + params.content;
 
 			const fullPath = path.join(root, params.path);
@@ -697,14 +721,13 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const agentDir = path.join(AGENTS_DIR, name);
-			if (fs.existsSync(agentDir)) {
-				ctx.ui.notify(`Agent "${name}" already exists. Delete ${agentDir} to re-init.`, "warning");
-				return;
-			}
-
 			const memoryRoot = path.join(agentDir, "memory");
-			fs.mkdirSync(memoryRoot, { recursive: true });
-			initGitRepo(memoryRoot);
+
+			// Scaffold only when the agent (or its memory tree) is new
+			const isNew = !fs.existsSync(agentDir) || !fs.existsSync(path.join(memoryRoot, "system"));
+			if (isNew) {
+				fs.mkdirSync(memoryRoot, { recursive: true });
+				initGitRepo(memoryRoot);
 
 			const sysDir = path.join(memoryRoot, "system");
 			const humanDir = path.join(sysDir, "human");
@@ -818,16 +841,65 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 `,
 			);
 
-			git(["add", "-A"], memoryRoot);
-			git(["commit", "-m", `init: Agent "${name}" memory system setup`], memoryRoot);
+			}
+
+			// Identity + clean repo + registry (shared with session_start auto-backfill)
+			const result = ensureAgentIdentity(identityEnv, name, isNew);
+			if (!result) {
+				ctx.ui.notify(`Failed to initialize agent "${name}".`, "warning");
+				return;
+			}
 
 			activeAgent = name;
+			agentUuid = result.uuid;
 			saveActiveAgent(name);
 
 			ctx.ui.notify(
-				`\u2705 Agent "${name}" initialized. Edit system/ files or use memory_write() to populate memory.`,
+				`\u2705 Agent "${name}" ready. UUID: ${result.uuid}${result.kept ? " (kept)" : ""}\n` +
+				`   Org registry: ${result.registered ? `registered (${result.status})` : "FAILED"}\n` +
+				`   Next: edit system/ files or /agent:switch ${name}`,
 				"success",
 			);
+		},
+	});
+
+	pi.registerCommand("agent:promote", {
+		description: "Promote an ephemeral agent to full member in the org registry (state flip, no data migration). Usage: /agent:promote <name>",
+		handler: async (args, ctx) => {
+			const name = args.trim();
+			if (!name) {
+				ctx.ui.notify("Usage: /agent:promote <agent-name>", "warning");
+				return;
+			}
+
+			const reg = loadOrgRegistry(identityEnv);
+			const member = reg.members[name];
+			if (!member) {
+				ctx.ui.notify(`Agent "${name}" not in org registry. Run /agent:init ${name} first.`, "warning");
+				return;
+			}
+			if (member.status === "member") {
+				ctx.ui.notify(`Agent "${name}" is already a member.`, "info");
+				return;
+			}
+
+			// Registry is the source of truth; agent.json mirrors the flip
+			member.status = "member";
+			if (saveOrgRegistry(identityEnv, reg, agentUuid)) {
+				const agentJsonPath = path.join(AGENTS_DIR, name, "memory", "agent.json");
+				try {
+					const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"));
+					parsed.status = "member";
+					fs.writeFileSync(agentJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+					git(["add", "agent.json"], path.join(AGENTS_DIR, name, "memory"));
+					git(["commit", "-m", `identity: promote ${name} to member`], path.join(AGENTS_DIR, name, "memory"));
+				} catch {
+					// registry flip stands even if agent.json is unreadable
+				}
+				ctx.ui.notify(`\u2705 Promoted "${name}" to member.`, "success");
+			} else {
+				ctx.ui.notify("Failed to update org registry.", "warning");
+			}
 		},
 	});
 
@@ -844,7 +916,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					}
 					const chosen = await ctx.ui.select("Select agent:", agents);
 					if (!chosen) return;
-					activeAgent = chosen;
+					setActiveAgent(chosen);
 					saveActiveAgent(chosen);
 					ctx.ui.notify(`\u2705 Switched to agent: ${chosen}`, "success");
 				} catch {
@@ -859,7 +931,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 
-			activeAgent = name;
+			setActiveAgent(name);
 			saveActiveAgent(name);
 			ctx.ui.notify(`\u2705 Switched to agent: ${name}`, "success");
 		},
@@ -1247,8 +1319,26 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		};
 	});
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, ctx) => {
 		activeAgent = loadActiveAgent();
+		agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
+
+		// Auto-backfill: a legacy agent (no identity yet) gets cleaned and
+		// identified on load. Idempotent, one-time per agent; covers pi restart
+		// and /reload so the last-used agent's memory loads cleanly.
+		if (activeAgent && !agentUuid) {
+			const result = ensureAgentIdentity(identityEnv, activeAgent, false);
+			if (result) {
+				agentUuid = result.uuid;
+				ctx.ui.notify(
+					`\u2705 Backfilled "${activeAgent}" on load: identity created, Letta cruft stripped, memory committed.\n` +
+					`   UUID: ${result.uuid}${result.caughtUp ? " | catch-up commit landed" : ""}`,
+					"success",
+				);
+			} else {
+				ctx.ui.notify(`Auto-backfill failed for "${activeAgent}". Run /agent:init ${activeAgent} manually.`, "warning");
+			}
+		}
 	});
 }
