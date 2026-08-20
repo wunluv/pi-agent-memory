@@ -29,8 +29,24 @@ import {
 	loadAgentIdentity,
 	loadOrgRegistry,
 	saveOrgRegistry,
+	registerMember,
+	shortUuid,
 	type IdentityEnv,
 } from "./identity";
+import {
+	agentRepoUrl,
+	isSyncEnabled,
+	loadSyncConfig,
+	localRemotePath,
+	parseSshRemote,
+	provisionRemote,
+	pullOnce,
+	pushAsync,
+	saveSyncConfig,
+	syncOnce,
+	type SyncConfig,
+	type SyncEnv,
+} from "./sync";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -39,6 +55,8 @@ const ACTIVE_FILE = path.join(AGENTS_DIR, "active");
 const SESSIONS_DIR = path.join(os.homedir(), ".pi", "agent", "sessions");
 const PROMPTS_DIR = path.join(__dirname, "prompts");
 const ORG_ROOT = path.join(os.homedir(), ".pi", "org");
+const SYNC_CONFIG_PATH = path.join(os.homedir(), ".pi", "memory-sync.json");
+const SYNC_LOG_PATH = path.join(os.homedir(), ".pi", "agent", "memory-repository-push.log");
 
 // ─── State ────────────────────────────────────────────────────────────────────────
 
@@ -330,9 +348,9 @@ function formatBacklinks(backlinks: string[]): string {
 
 // ─── Git Helpers ──────────────────────────────────────────────────────────────────
 
-function git(args: string[], cwd: string): { stdout: string; stderr: string; code: number } {
+function git(args: string[], cwd: string, timeoutMs = 10000): { stdout: string; stderr: string; code: number } {
 	try {
-		const result = cp.spawnSync("git", args, { cwd, encoding: "utf-8", timeout: 10000 });
+		const result = cp.spawnSync("git", args, { cwd, encoding: "utf-8", timeout: timeoutMs });
 		return {
 			stdout: result.stdout || "",
 			stderr: result.stderr || "",
@@ -346,6 +364,16 @@ function git(args: string[], cwd: string): { stdout: string; stderr: string; cod
 // Identity + org-registry env — DI so identity.ts stays testable and free of
 // module-global git state. agentsDir/orgRoot are the live pi locations.
 const identityEnv: IdentityEnv = { agentsDir: AGENTS_DIR, orgRoot: ORG_ROOT, git };
+
+// Sync env — DI so sync.ts stays testable against a local bare repo.
+const syncEnv: SyncEnv = {
+	configPath: SYNC_CONFIG_PATH,
+	logPath: SYNC_LOG_PATH,
+	git,
+	spawn: cp.spawn,
+	spawnSync: cp.spawnSync,
+	nodePath: process.execPath,
+};
 
 /** Initialize a git repo at the given path */
 function initGitRepo(repoPath: string): boolean {
@@ -362,7 +390,55 @@ function gitCommit(filePath: string, message: string, root: string): boolean {
 	const add = git(["add", relPath], root);
 	if (add.code !== 0) return false;
 	const commit = git(["commit", "-m", message], root);
-	return commit.code === 0;
+	if (commit.code === 0) {
+		maybeSyncAfterZoneACommit(root);
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Repo-role guard (#8 frozen scope): after a Zone A commit, fire an async
+ * push — but ONLY for the active agent's own Zone A repo. Zone B and the org
+ * root are never pushed by #8 (their policy lives in #24).
+ */
+function maybeSyncAfterZoneACommit(root: string): void {
+	if (!activeAgent || !agentUuid) return;
+	if (root !== getAgentMemoryRoot()) return;
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config) || !config.push_on_commit) return;
+	pushAsync(syncEnv, root, agentRepoUrl(config.server_url, agentUuid));
+}
+
+/**
+ * Provision the sync remote (local/ssh) and fire an async push after identity
+ * is established. Used by /agent:init and the session_start backfill so the
+ * first push has a bare repo to land on.
+ */
+function syncAgentAfterIdentity(name: string, uuid: string): void {
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config)) return;
+	const remote = agentRepoUrl(config.server_url, uuid);
+	provisionRemote(syncEnv, remote);
+	if (config.push_on_commit) {
+		pushAsync(syncEnv, path.join(AGENTS_DIR, name, "memory"), remote);
+	}
+}
+
+/** Human-readable sync config summary. */
+function formatSyncConfig(config: SyncConfig, label: string): string {
+	const enabled = isSyncEnabled(config);
+	const lines = [
+		`Sync config (${label}):`,
+		`  server_url: ${config.server_url || "(unset)"}`,
+		`  push_on_commit: ${config.push_on_commit}`,
+		`  pull_on_start: ${config.pull_on_start}`,
+		enabled ? "  sync: ENABLED" : "  sync: OFF (no server_url set)",
+	];
+	if (enabled && agentUuid) {
+		lines.push(`  active agent repo: ${agentRepoUrl(config.server_url, agentUuid)}`);
+	}
+	return lines.join("\n");
 }
 
 /** Check if a path is a git repo */
@@ -709,6 +785,48 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "memory_sync_config",
+		label: "Memory Sync Config",
+		description:
+			"Get or set memory sync configuration (~/.pi/memory-sync.json). Pass 'set' to update server_url, push_on_commit, or pull_on_start. Returns the current (or updated) config. Sync is off until server_url is set.",
+		promptSnippet: "Get/set sync config (server_url, push_on_commit, pull_on_start)",
+		promptGuidelines: [
+			"Defaults: push_on_commit and pull_on_start are true when server_url is set",
+			"server_url is a base; an agent's repo derives as <server_url>/<uuid>.git",
+		],
+		parameters: Type.Object({
+			set: Type.Optional(
+				Type.Object({
+					server_url: Type.Optional(
+						Type.String({ description: "Base URL of the sync server (ssh://host/path, host:path, file:///path, or https)." }),
+					),
+					push_on_commit: Type.Optional(Type.Boolean({ description: "Async-push after each Zone A commit (default true)." })),
+					pull_on_start: Type.Optional(Type.Boolean({ description: "Auto-pull on session start (default true)." })),
+				}),
+			),
+		}),
+		async execute(_toolCallId, params) {
+			const current = loadSyncConfig(syncEnv);
+			if (params.set) {
+				const next: SyncConfig = {
+					server_url: params.set.server_url !== undefined ? params.set.server_url : current.server_url,
+					push_on_commit: params.set.push_on_commit !== undefined ? params.set.push_on_commit : current.push_on_commit,
+					pull_on_start: params.set.pull_on_start !== undefined ? params.set.pull_on_start : current.pull_on_start,
+				};
+				const saved = saveSyncConfig(syncEnv, next);
+				return {
+					content: [{ type: "text", text: saved ? formatSyncConfig(next, "updated") : "Failed to save sync config." }],
+					details: { config: next, saved },
+				};
+			}
+			return {
+				content: [{ type: "text", text: formatSyncConfig(current, "current") }],
+				details: { config: current },
+			};
+		},
+	});
+
 	// ─── Commands ───────────────────────────────────────────────────────────────
 
 	pi.registerCommand("agent:init", {
@@ -833,6 +951,9 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 | \`/memory:read <path>\` | Read a memory file |
 | \`/memory:search <query>\` | Search memory files |
 | \`/memory:recall <query>\` | Search session history |
+| \`/agent:sync\` | Manually sync memory (pull then push) |
+| \`/agent:pull <uuid>\` | Pull an agent's memory from the sync server |
+| \`/memory:sync-config\` | View or set sync config |
 
 ---
 
@@ -853,6 +974,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			activeAgent = name;
 			agentUuid = result.uuid;
 			saveActiveAgent(name);
+			syncAgentAfterIdentity(name, result.uuid);
 
 			ctx.ui.notify(
 				`\u2705 Agent "${name}" ready. UUID: ${result.uuid}${result.kept ? " (kept)" : ""}\n` +
@@ -893,6 +1015,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					fs.writeFileSync(agentJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
 					git(["add", "agent.json"], path.join(AGENTS_DIR, name, "memory"));
 					git(["commit", "-m", `identity: promote ${name} to member`], path.join(AGENTS_DIR, name, "memory"));
+					maybeSyncAfterZoneACommit(path.join(AGENTS_DIR, name, "memory"));
 				} catch {
 					// registry flip stands even if agent.json is unreadable
 				}
@@ -934,6 +1057,163 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			setActiveAgent(name);
 			saveActiveAgent(name);
 			ctx.ui.notify(`\u2705 Switched to agent: ${name}`, "success");
+		},
+	});
+
+	pi.registerCommand("agent:sync", {
+		description: "Manually sync the active agent's Zone A memory (pull --rebase then push). Usage: /agent:sync",
+		handler: async (_args, ctx) => {
+			if (!activeAgent || !agentUuid) {
+				ctx.ui.notify("No active agent. Use /agent:switch or /agent:init first.", "warning");
+				return;
+			}
+			const config = loadSyncConfig(syncEnv);
+			if (!isSyncEnabled(config)) {
+				ctx.ui.notify("Sync is off — no server_url set. Use /memory:sync-config server_url=<url>.", "info");
+				return;
+			}
+			const root = getAgentMemoryRoot()!;
+			const remote = agentRepoUrl(config.server_url, agentUuid);
+			const res = syncOnce(syncEnv, root, remote, 60000);
+			if (res.conflict) {
+				ctx.ui.notify("Conflict: local and remote diverge. Both kept intact; resolve manually (gated write).", "warning");
+			} else if (res.ok) {
+				ctx.ui.notify(`\u2705 Synced (pulled: ${res.pulled}, pushed: ${res.pushed}).`, "success");
+			} else {
+				ctx.ui.notify(`Sync failed: ${res.message}`, "warning");
+			}
+		},
+	});
+
+	pi.registerCommand("agent:pull", {
+		description: "Pull an agent's memory from the sync server by UUID. Usage: /agent:pull <uuid>",
+		handler: async (args, ctx) => {
+			const uuid = args.trim();
+			const config = loadSyncConfig(syncEnv);
+			if (!isSyncEnabled(config)) {
+				ctx.ui.notify("Sync is off — no server_url set. Use /memory:sync-config server_url=<url>.", "info");
+				return;
+			}
+
+			// No uuid: list repos on a local/ssh server; http/https requires uuid.
+			if (!uuid) {
+				const local = localRemotePath(config.server_url);
+				if (local) {
+					try {
+						const repos = fs.readdirSync(local).filter((f) => f.endsWith(".git"));
+						ctx.ui.notify(
+							repos.length
+								? `Repos on ${local}:\n` + repos.map((r) => `  ${r}`).join("\n")
+								: `No repos at ${local}.`,
+							"info",
+						);
+					} catch {
+						ctx.ui.notify(`No repos at ${local}.`, "info");
+					}
+					return;
+				}
+				const ssh = parseSshRemote(config.server_url);
+				if (ssh) {
+					const r = syncEnv.spawnSync("ssh", [ssh.host, `ls ${ssh.repoPath}`], { encoding: "utf-8", timeout: 15000 });
+					ctx.ui.notify(
+						r.stdout.trim()
+							? `Repos on ${ssh.host}:${ssh.repoPath}:\n${r.stdout.trim()}`
+							: `Could not list repos on ${ssh.host}:${ssh.repoPath}.`,
+						"info",
+					);
+					return;
+				}
+				ctx.ui.notify("A UUID is required for http/https remotes. Usage: /agent:pull <uuid>", "warning");
+				return;
+			}
+
+			const remote = agentRepoUrl(config.server_url, uuid);
+			const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-pull-"));
+			const clone = git(["clone", remote, tmp], os.tmpdir(), 30000);
+			if (clone.code !== 0) {
+				ctx.ui.notify(`Clone failed: ${clone.stderr || clone.stdout}`, "warning");
+				fs.rmSync(tmp, { recursive: true, force: true });
+				return;
+			}
+
+			let pulledUuid: string | null = null;
+			let name: string | null = null;
+			try {
+				const parsed = JSON.parse(fs.readFileSync(path.join(tmp, "agent.json"), "utf-8"));
+				pulledUuid = typeof parsed.uuid === "string" ? parsed.uuid : null;
+				name = typeof parsed.name === "string" && parsed.name ? parsed.name : pulledUuid ? shortUuid(pulledUuid) : null;
+			} catch {
+				// no agent.json
+			}
+			if (!pulledUuid || !name) {
+				ctx.ui.notify("Clone has no valid agent.json — not an agent memory repo.", "warning");
+				fs.rmSync(tmp, { recursive: true, force: true });
+				return;
+			}
+			if (pulledUuid !== uuid) {
+				ctx.ui.notify(`UUID mismatch: requested ${uuid}, repo has ${pulledUuid}. Refusing.`, "warning");
+				fs.rmSync(tmp, { recursive: true, force: true });
+				return;
+			}
+
+			const dest = path.join(AGENTS_DIR, name, "memory");
+			if (fs.existsSync(dest)) {
+				const choice = await ctx.ui.select(`Agent "${name}" already exists locally. Overwrite its memory?`, ["overwrite", "cancel"]);
+				if (choice !== "overwrite") {
+					ctx.ui.notify("Cancelled.", "info");
+					fs.rmSync(tmp, { recursive: true, force: true });
+					return;
+				}
+				fs.rmSync(dest, { recursive: true, force: true });
+			}
+
+			fs.mkdirSync(path.join(AGENTS_DIR, name), { recursive: true });
+			fs.cpSync(tmp, dest, { recursive: true });
+			fs.rmSync(tmp, { recursive: true, force: true });
+			// git config does not clone — re-apply author identity (#8)
+			configureRepoAuthor(identityEnv, dest, pulledUuid);
+			registerMember(identityEnv, name, pulledUuid, "ephemeral");
+			ctx.ui.notify(`\u2705 Pulled agent "${name}" (${pulledUuid}) into ~/.pi/agents/${name}/memory`, "success");
+		},
+	});
+
+	pi.registerCommand("memory:sync-config", {
+		description: "View or set memory sync config. Usage: /memory:sync-config [server_url=... push_on_commit=... pull_on_start=...]",
+		handler: async (args, ctx) => {
+			const current = loadSyncConfig(syncEnv);
+			const tokens = args.trim().split(/\s+/).filter(Boolean);
+			if (tokens.length === 0) {
+				ctx.ui.notify(formatSyncConfig(current, "current"), "info");
+				return;
+			}
+			const next = { ...current };
+			let changed = false;
+			for (const tok of tokens) {
+				const eq = tok.indexOf("=");
+				if (eq === -1) {
+					ctx.ui.notify(`Ignored "${tok}" — expected key=value.`, "warning");
+					continue;
+				}
+				const key = tok.slice(0, eq).trim();
+				const val = tok.slice(eq + 1).trim();
+				if (key === "server_url") {
+					next.server_url = val;
+					changed = true;
+				} else if (key === "push_on_commit") {
+					next.push_on_commit = val === "true" || val === "1";
+					changed = true;
+				} else if (key === "pull_on_start") {
+					next.pull_on_start = val === "true" || val === "1";
+					changed = true;
+				} else {
+					ctx.ui.notify(`Unknown key "${key}".`, "warning");
+				}
+			}
+			if (changed && saveSyncConfig(syncEnv, next)) {
+				ctx.ui.notify(formatSyncConfig(next, "updated"), "success");
+			} else if (changed) {
+				ctx.ui.notify("Failed to save sync config.", "warning");
+			}
 		},
 	});
 
@@ -1331,6 +1611,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			const result = ensureAgentIdentity(identityEnv, activeAgent, false);
 			if (result) {
 				agentUuid = result.uuid;
+				syncAgentAfterIdentity(activeAgent, result.uuid);
 				ctx.ui.notify(
 					`\u2705 Backfilled "${activeAgent}" on load: identity created, Letta cruft stripped, memory committed.\n` +
 					`   UUID: ${result.uuid}${result.caughtUp ? " | catch-up commit landed" : ""}`,
@@ -1338,6 +1619,22 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				);
 			} else {
 				ctx.ui.notify(`Auto-backfill failed for "${activeAgent}". Run /agent:init ${activeAgent} manually.`, "warning");
+			}
+		}
+
+		// Auto-pull (#8): 2–3s fail-fast. Unreachable server → continue on local
+		// state, never block context build. Conflict → notify, human resolves.
+		if (activeAgent && agentUuid) {
+			const config = loadSyncConfig(syncEnv);
+			if (isSyncEnabled(config) && config.pull_on_start) {
+				const root = getAgentMemoryRoot()!;
+				const res = pullOnce(syncEnv, root, agentRepoUrl(config.server_url, agentUuid), 2500);
+				if (res.conflict) {
+					ctx.ui.notify(
+						"Memory sync: conflict on pull — local and remote kept intact. Resolve manually (gated write).",
+						"warning",
+					);
+				}
 			}
 		}
 	});
