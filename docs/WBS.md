@@ -38,7 +38,7 @@
 | ID | Package | Deliverable | Acceptance |
 |----|---------|-------------|------------|
 | 1.2.1 | Async push on commit | Extension-level detached push (`pull --rebase --autostash` → `push`) after a Zone A commit when `push_on_commit` + `server_url` set; logs to `memory-repository-push.log`; 60s ceiling, never killed mid-operation | Engine pushes only the active agent's Zone A repo (Zone B/org root = #24); failure logged, write never blocks |
-| 1.2.2 | `/agent:pull [uuid]` | Pure `git clone` from `<server_url>/<uuid>.git`; name from `agent.json` in the clone; uuid verified; author config + remote re-applied; collision prompts | Works against any git remote (ssh regen, GitHub); mismatched uuid rejected |
+| 1.2.2 | `/agent:pull [uuid]` | Pure `git clone` from `<server_url>/<uuid>.git`; name from `agent.json` in the clone; uuid verified; author config + remote re-applied; collision prompts | Works against any git remote (ssh mojah2, GitHub); mismatched uuid rejected |
 | 1.2.3 | `memory_sync_config` | get/set `push_on_commit`, `pull_on_start` in `~/.pi/memory-sync.json` (mode 600) | Defaults true when `server_url` set; sync off when unset; get/set round-trips |
 | 1.2.4 | `session_start` auto-pull | Conditional pull before Zone A context build | 2–3s fail-fast; unreachable server → continue on local state |
 
@@ -50,7 +50,7 @@
 |----|---------|-------------|------------|
 | 1.3.1 | Walk-up resolver | `resolveMemoryRoot` walks up from stable project signal | No mid-session root flip; wrong root = local misplacement only |
 | 1.3.2 | Resolve-once cache | Resolve once per session, cache | Never re-walks per tool call |
-| 1.3.3 | Registry + robust `/startwork` | `registry.json` name→path map + reconcile-on-move prompt + offer `/memory:init` | Deterministic `/startwork` by name; stale path reconciled via prompt |
+| 1.3.3 | Registry + robust `/startwork` | `registry.json` uuid→{name,path} map + reconcile-on-move prompt + offer `/memory:init` | Deterministic `/startwork` by name; stale path reconciled via prompt |
 | 1.3.4 | `/startwork` as ritual | Load eagle eye + priorities; not a gate | Works with no `.memory/` present (auto-discover) |
 
 **Depends on:** 1.3.3 extends issue #1 (strict parser, shipped). **Issues:** 1.3.3 = #13 (open, folds in #4); 1.3.1/1.3.2/1.3.4 = #9 (open).

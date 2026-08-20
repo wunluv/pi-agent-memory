@@ -68,10 +68,13 @@ pi-agent-memory/
 SPEC_v4.md              Canonical spec at repo root
 mem_system_prompt.md    Memory access protocol (scan before load, bin before read)
 AGENTS.md               This file
+docs/                   Design + planning (Gate 1/2 deliverables)
+  DATA-MODEL.md         Entities, relationships, invariants (revised 2026-08-20)
+  INTERFACE-PLAN.md     Interface contracts (Gate 2)
+  WBS.md                Work breakdown structure
 .memory/                Project memory (local git, no remote)
   reference/
     status.md           Operational logbook
-    DATA-MODEL.md       Entities, relationships, invariants (Gate 1)
     gameplan.md         Phased plan applying methodology gates
 ```
 

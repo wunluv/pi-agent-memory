@@ -37,10 +37,13 @@ Zone C (Sessions)  .pi/sessions/                    Pi-managed, accessed via mem
 | `/memory:search <query>` | Full-text search |
 | `/memory:recall <query>` | Search session history |
 | `/remember` | Consolidate session into global memory |
+| `/agent:sync` | Manually sync Zone A memory (pull then push) |
+| `/agent:pull <uuid>` | Pull an agent's memory from the sync server |
+| `/memory:sync-config` | View or set sync config |
 
 ## Tools
 
-Six tools registered: `memory_tree`, `memory_read`, `memory_write`, `memory_search`, `memory_recall`, plus `super_sessions_analyze` and `super_sessions_synthesize`.
+Seven tools registered: `memory_tree`, `memory_read`, `memory_write`, `memory_search`, `memory_recall`, `memory_sync_config`, plus `super_sessions_analyze` and `super_sessions_synthesize`.
 
 All file-based tools accept an optional `root` parameter to override the session root.
 
