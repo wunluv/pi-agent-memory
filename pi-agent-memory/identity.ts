@@ -218,11 +218,14 @@ export function ensureAgentIdentity(env: IdentityEnv, name: string, isNew: boole
 
 		// Commit; skip when nothing changed (idempotent re-init).
 		// Backfill path: accumulated memory lands in its own catch-up commit first.
+		// The split restores agent.json from HEAD, so it needs an existing HEAD;
+		// on an unborn HEAD (fresh git init) fall back to a single combined commit.
 		let caughtUp = false;
 		env.git(["add", "-A"], memoryRoot);
 		const staged = env.git(["status", "--porcelain"], memoryRoot);
 		if (staged.stdout.trim()) {
-			if (!isNew) {
+			const hasHead = env.git(["rev-parse", "--verify", "HEAD"], memoryRoot).code === 0;
+			if (!isNew && hasHead) {
 				env.git(["restore", "--staged", "agent.json"], memoryRoot);
 				const memoryOnly = env.git(["status", "--porcelain"], memoryRoot).stdout.trim();
 				if (memoryOnly) {

@@ -142,6 +142,35 @@ assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
 	assert.ok(loadOrgRegistry(env).members.beta);
 }
 
+// ─── legacy backfill on unborn HEAD (zero-commit repo) ───────────────────────
+// #29: git restore --staged fails with no HEAD to restore from, which swept
+// agent.json into the catch-up commit and silently no-opped the identity commit.
+// Guard: skip the split, land a single combined commit.
+
+{
+	const env = makeEnv();
+	const agentRepo = path.join(env.agentsDir, "delta", "memory");
+	fs.mkdirSync(path.join(agentRepo, "system"), { recursive: true });
+	fs.writeFileSync(path.join(agentRepo, "system", "persona.md"), "# Persona\n");
+	git(["init"], agentRepo); // no commit — unborn HEAD
+	git(["config", "user.name", "legacy-agent"], agentRepo);
+	git(["config", "user.email", "legacy@pi.local"], agentRepo);
+
+	const res = ensureAgentIdentity(env, "delta", false);
+	assert.ok(res);
+	assert.equal(res.caughtUp, false, "no catch-up split on unborn HEAD");
+
+	// single combined commit (agent.json + memory), not a silent no-op
+	const subjects = git(["log", "--format=%s"], agentRepo).stdout.trim().split("\n").filter(Boolean);
+	assert.deepEqual(subjects, ["identity: backfill agent.json for delta"]);
+
+	// agent.json actually landed (not swept into a phantom commit)
+	assert.ok(JSON.parse(fs.readFileSync(path.join(agentRepo, "agent.json"), "utf-8")).uuid === res.uuid);
+	const committedFiles = git(["show", "--name-only", "--format=", "HEAD"], agentRepo).stdout.trim().split("\n").filter(Boolean);
+	assert.ok(committedFiles.includes("agent.json"));
+	assert.ok(committedFiles.includes("system/persona.md"));
+}
+
 // ─── promote flip (registry is source of truth) ──────────────────────────────
 
 {
