@@ -26,12 +26,16 @@ import {
 import {
 	configureRepoAuthor,
 	ensureAgentIdentity,
+	ensureProjectUuid,
+	findMemberUuid,
+	findProjectByName,
 	loadAgentIdentity,
 	loadOrgRegistry,
 	lookupProject,
+	mintProjectUuid,
+	readProjectUuid,
 	registerMember,
 	registerProject,
-	resolveProjectName,
 	saveOrgRegistry,
 	shortUuid,
 	type IdentityEnv,
@@ -141,13 +145,14 @@ interface ProjectEntry {
 
 /**
  * Look up a project by name. Authoritative source is the org registry's
- * projects section (name → path, #13); falls back to parsing system/projects.md
- * (the legacy human-readable index). Does NOT substring-match over prose — the
- * caller must exclude path-like inputs first (see isPathLike).
+ * uuid-keyed projects section (scanned by the mutable `name` field, #13);
+ * falls back to parsing system/projects.md (the demoted human-readable index).
+ * Does NOT substring-match over prose — the caller must exclude path-like
+ * inputs first (see isPathLike).
  */
 function findProjectEntry(name: string): ProjectEntry | null {
-	const registered = lookupProject(identityEnv, name);
-	if (registered) return { name, path: registered };
+	const found = findProjectByName(identityEnv, name);
+	if (found) return { name: found.name, path: found.path };
 
 	const agentRoot = getAgentMemoryRoot();
 	if (!agentRoot) return null;
@@ -600,6 +605,7 @@ interface BootstrapResult {
 	memoryPath: string;
 	pattern: "org" | "standalone";
 	subProjects: string[];
+	uuid: string;
 }
 
 /** Bootstrap .memory/ in a project directory (org vs standalone). Returns a summary or null. */
@@ -624,6 +630,9 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 		fs.mkdirSync(path.join(memoryPath, "project_insights", "analyses"), { recursive: true });
 		fs.mkdirSync(path.join(memoryPath, "project_insights", "wisdom"), { recursive: true });
 		initGitRepo(memoryPath);
+
+		// project.json — the project's immutable soul identity (uuid only; name/path are registry-owned)
+		const uuid = ensureProjectUuid(memoryPath);
 
 		const now = new Date().toISOString().split("T")[0];
 		const projectName = path.basename(resolvedPath);
@@ -658,7 +667,7 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 		git(["add", "-A"], memoryPath);
 		git(["commit", "-m", `init: Bootstrap .memory/ for ${projectName}`], memoryPath);
 
-		return { memoryPath, pattern: isOrg ? "org" : "standalone", subProjects };
+		return { memoryPath, pattern: isOrg ? "org" : "standalone", subProjects, uuid };
 	} catch {
 		return null;
 	}
@@ -1099,11 +1108,12 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 
 			const reg = loadOrgRegistry(identityEnv);
-			const member = reg.members[name];
-			if (!member) {
+			const memberUuid = findMemberUuid(identityEnv, name);
+			if (!memberUuid) {
 				ctx.ui.notify(`Agent "${name}" not in org registry. Run /agent:init ${name} first.`, "warning");
 				return;
 			}
+			const member = reg.members[memberUuid];
 			if (member.status === "member") {
 				ctx.ui.notify(`Agent "${name}" is already a member.`, "info");
 				return;
@@ -1461,7 +1471,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 
 			// Try to resolve as a path first
-			let resolvedPath = input.startsWith("/") || input.startsWith("~")
+			const resolvedPath = input.startsWith("/") || input.startsWith("~")
 				? input.replace(/^~/, os.homedir())
 				: path.resolve(input);
 
@@ -1476,27 +1486,40 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				);
 			};
 
-			// Case A: .memory/ exists at the resolved path → reconcile stale registry path
+			// Case A: .memory/ exists → reconcile by project.json uuid (no heuristic)
 			if (fs.existsSync(memoryPath)) {
-				const name = resolveProjectName(memoryPath);
-				const registered = lookupProject(identityEnv, name);
-				if (registered && registered !== resolvedPath) {
-					const choice = await ctx.ui.select(
-						`Found "${name}" at ${resolvedPath}, but the registry says ${registered}. Update path?`,
-						["update", "cancel"],
-					);
-					if (choice === "update") {
-						registerProject(identityEnv, name, resolvedPath, agentUuid);
-						updateProjectsMdPath(name, registered, resolvedPath);
+				const uuid = readProjectUuid(memoryPath);
+				if (uuid) {
+					const registered = lookupProject(identityEnv, uuid);
+					if (registered && registered.path !== resolvedPath) {
+						// Same soul at a different path: a move OR a fork (cp -r carries the uuid).
+						const choice = await ctx.ui.select(
+							`"${registered.name}" is registered at ${registered.path}, but its project.json lives here (${resolvedPath}).`,
+							["update", "cancel", "mint a fresh uuid"],
+						);
+						if (choice === "update") {
+							registerProject(identityEnv, uuid, registered.name, resolvedPath, registered.humans, agentUuid);
+							updateProjectsMdPath(registered.name, registered.path, resolvedPath);
+						} else if (choice === "mint a fresh uuid") {
+							// fork — give this copy its own soul, never silently merge
+							const fresh = mintProjectUuid(memoryPath);
+							git(["add", "project.json"], memoryPath);
+							git(["commit", "-m", "identity: mint fresh project uuid (fork)"], memoryPath);
+							registerProject(identityEnv, fresh, path.basename(resolvedPath), resolvedPath, [], agentUuid);
+						}
+						// "cancel" → no registry write; proceed with the session
+					} else if (!registered) {
+						// project.json exists but the uuid is unknown to the registry → register it
+						registerProject(identityEnv, uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
 					}
-				} else if (!registered) {
-					registerProject(identityEnv, name, resolvedPath, agentUuid);
+					// registered && same path → already reconciled, no-op
 				}
+				// uuid null (legacy, no project.json) → proceed, no registry write (#22 mints it)
 				begin(memoryPath);
 				return;
 			}
 
-			// Case B: no .memory/ at the path; a bare name resolves through the registry
+			// Case B: no .memory/ at the path; a bare name resolves through the registry or projects.md
 			if (!isPathLike(input)) {
 				const entry = findProjectEntry(input);
 				if (entry) {
@@ -1524,7 +1547,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					ctx.ui.notify(`Failed to bootstrap .memory/ at ${resolvedPath}.`, "warning");
 					return;
 				}
-				registerProject(identityEnv, resolveProjectName(result.memoryPath), resolvedPath, agentUuid);
+				registerProject(identityEnv, result.uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
 				begin(result.memoryPath);
 			} else {
 				ctx.ui.notify("No session started.", "info");
