@@ -60,13 +60,14 @@ pi-agent-memory/
     startwork.md        /startwork ritual instructions
     endwork.md          /endwork ritual instructions
     init-memory.md      /memory:init prompt (future use)
+    legacy/
+      mem_system_prompt.md  Archived Letta-era protocol; canonical is prompts/system.md
   README.md             Quick start, architecture overview
   VMA.md                Vision, Mission, Aims — Phase 1 done, Phase 2 backlog
   SPEC_v4.md            Full design spec: three zones, progressive disclosure, acceptance criteria
   SPEC_v3.md            Previous spec version (reference)
 
 SPEC_v4.md              Canonical spec at repo root
-mem_system_prompt.md    Memory access protocol (scan before load, bin before read)
 AGENTS.md               This file
 docs/                   Design + planning (Gate 1/2 deliverables)
   DATA-MODEL.md         Entities, relationships, invariants (revised 2026-08-20)

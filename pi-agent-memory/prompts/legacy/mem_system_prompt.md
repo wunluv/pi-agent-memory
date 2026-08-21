@@ -1,3 +1,6 @@
+> ARCHIVED 2026-08-21 — Letta-era duplicate memory protocol. The canonical, injected protocol
+> is `prompts/system.md`. Kept for history; not loaded by the extension. Point, never repeat (#3).
+
 # Memory Access Protocol
 
 **Purpose:** Minimize token waste by loading only what's needed, when it's needed.
