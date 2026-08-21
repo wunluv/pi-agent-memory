@@ -522,6 +522,75 @@ function getTokenBudget(): number {
 	return DEFAULT_TOKEN_BUDGET;
 }
 
+/**
+ * Read every system/*.md file under an agent root as injection entries.
+ * Shared by buildSystemContext (what is injected) and the #36 write-guard
+ * (what WOULD BE injected after a system/ write) so the two never drift.
+ */
+function readSystemEntries(root: string): SystemFileEntry[] {
+	const sysDir = path.join(root, "system");
+	if (!fs.existsSync(sysDir)) return [];
+	const systemRoot = path.join(root, "system");
+	return collectMdFiles(sysDir).map((file) => {
+		const content = fs.readFileSync(file, "utf-8");
+		const fm = parseFrontmatter(content);
+		return {
+			relPath: path.relative(systemRoot, file).replace(/\\/g, "/"),
+			content: fm.body.trim(),
+			importance: fm.importance,
+			updated: fm.updated,
+		};
+	});
+}
+
+/**
+ * #36 write-time guard. For a pending system/ write (a brand-new or edited
+ * file on disk-not-yet-written), return the relPaths that WOULD be evicted from
+ * context by that write under the current budget. Pinned files are exempt and
+ * can never appear here. Empty array = the write costs nothing visible.
+ */
+function projectedSystemEvictions(targetRelPath: string, content: string): string[] {
+	const agentRoot = getAgentMemoryRoot();
+	if (!agentRoot) return [];
+
+	const before = new Set(
+		budgetSystemInjection(rankSystemFiles(readSystemEntries(agentRoot)), getTokenBudget()).included.map((f) => f.relPath)
+	);
+
+	// Project: replace/add the target with its written form (frontmatter present).
+	const fm = parseFrontmatter(content);
+	const entries = readSystemEntries(agentRoot);
+	const idx = entries.findIndex((f) => f.relPath === targetRelPath);
+	const projected: SystemFileEntry = {
+		relPath: targetRelPath,
+		content: fm.body.trim(),
+		importance: fm.importance,
+		updated: fm.updated,
+	};
+	if (idx >= 0) {
+		entries[idx] = projected;
+	} else {
+		entries.push(projected);
+	}
+
+	const after = new Set(
+		budgetSystemInjection(rankSystemFiles(entries), getTokenBudget()).included.map((f) => f.relPath)
+	);
+
+	// Files currently injected that this write would push out of the budget.
+	return [...before].filter((rel) => !after.has(rel));
+}
+
+/**
+ * Whether a memory_write targets the active agent's own Zone A system/.
+ * Applies only to the live spine: no zone override and no session root.
+ * Session (Zone B) and positive override writes are not the live context spine.
+ */
+function isAgentZoneASystemWrite(paramsPath: string, rootOverride?: string, sessionRoot?: string): boolean {
+	if (rootOverride || sessionRoot) return false;
+	return paramsPath.startsWith("system/");
+}
+
 /** Build the memory system section injected into every turn */
 function buildSystemContext(): string {
 	const sysDir = getSystemDir();
@@ -543,8 +612,7 @@ function buildSystemContext(): string {
 		};
 	});
 
-	const ranked = rankSystemFiles(entries);
-	const { included, omitted } = budgetSystemInjection(ranked, getTokenBudget());
+	const { included, omitted } = budgetSystemInjection(rankSystemFiles(entries), getTokenBudget());
 
 	const sections: string[] = [];
 
@@ -789,6 +857,9 @@ export default function (pi: ExtensionAPI) {
 			root: Type.Optional(
 				Type.String({ description: "Memory root override. Defaults to session root, then agent root." }),
 			),
+			overrideReason: Type.Optional(
+				Type.String({ description: "#36 Guard: for a live system/ write, explicitly accept the budget consequence (what would be evicted). Recorded in the commit message." }),
+			),
 		}),
 		async execute(_toolCallId, params) {
 			const root = resolveMemoryRoot(params.root);
@@ -803,6 +874,32 @@ export default function (pi: ExtensionAPI) {
 
 			const frontmatter = generateFrontmatter(params.description, tags, importance, agentUuid);
 			const fullContent = frontmatter + params.content;
+
+			// #36 write-time guard: a live Zone A system/ write that would push an
+			// injected file out of context is refused unless consciously overridden.
+			if (isAgentZoneASystemWrite(params.path, params.root, sessionMemoryRoot)) {
+				try {
+					const targetRel = canonicalizeMemoryPath(params.path)
+						.replace(/^system\//, "")
+						.replace(/\\/g, "/");
+					const evicted = projectedSystemEvictions(targetRel, fullContent);
+					if (evicted.length > 0 && !params.overrideReason) {
+						return {
+							content: [{
+								type: "text",
+								text:
+									`⛔ system/ write refused by budget guard (#36): adding system/${targetRel} would evict ${evicted
+										.map((r) => `system/${r}`)
+										.join(", ")} from context.\n` +
+									`Demote to craft/ (e.g. system/craft/<name>.md) or pass overrideReason to record a conscious override.`,
+							}],
+							details: { path: targetRel, wouldEvict: evicted, refused: true },
+						};
+					}
+				} catch {
+					// guard is best-effort — never block a write on a guard failure
+				}
+			}
 
 			// Ensure git repo exists
 			if (!isGitRepo(root)) {
@@ -825,7 +922,10 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			gitCommit(path.join(root, targetPath), `${targetPath}: ${params.description}`, root);
+			const commitMsg = params.overrideReason
+				? `${targetPath}: ${params.description} (override: ${params.overrideReason})`
+				: `${targetPath}: ${params.description}`;
+			gitCommit(path.join(root, targetPath), commitMsg, root);
 			return {
 				content: [{ type: "text", text: `\u2705 Written to ${targetPath} and committed.` }],
 				details: { path: targetPath, description: params.description, importance, tags },
