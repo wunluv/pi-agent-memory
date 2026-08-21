@@ -54,6 +54,7 @@ import {
 	type SyncConfig,
 	type SyncEnv,
 } from "./sync";
+import { canonicalizeMemoryPath } from "./paths";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -206,14 +207,29 @@ function collectMdFiles(dir: string): string[] {
 	return results;
 }
 
-/** Read a file relative to a memory root */
-function readMemoryFile(filePath: string, root: string): string | null {
-	const full = path.join(root, filePath);
+/** Read a file relative to a memory root, resolving to its canonical .md form. */
+function readMemoryFile(filePath: string, root: string): { content: string; ambiguity: string | null } | null {
+	let canonical: string;
 	try {
-		return fs.readFileSync(full, "utf-8");
+		canonical = canonicalizeMemoryPath(filePath);
 	} catch {
 		return null;
 	}
+	const full = path.join(root, canonical);
+	let content: string;
+	try {
+		content = fs.readFileSync(full, "utf-8");
+	} catch {
+		return null;
+	}
+	let ambiguity: string | null = null;
+	if (canonical !== filePath) {
+		const bare = path.join(root, filePath);
+		if (bare !== full && fs.existsSync(bare)) {
+			ambiguity = `Both "${filePath}" and "${canonical}" exist on disk (differ only by extension/case). Returning "${canonical}".`;
+		}
+	}
+	return { content, ambiguity };
 }
 
 /** Write a file relative to a memory root, creating directories as needed */
@@ -765,21 +781,23 @@ export default function (pi: ExtensionAPI) {
 					details: {},
 				};
 			}
-			const content = readMemoryFile(params.path, root);
-			if (content === null) {
+			const resolved = readMemoryFile(params.path, root);
+			if (resolved === null) {
 				return {
 					content: [{ type: "text", text: `File not found: ${params.path}` }],
 					details: {},
 				};
 			}
+			const { content, ambiguity } = resolved;
 			const fm = parseFrontmatter(content);
 			const links = extractWikiLinks(fm.body);
 			const backlinks = findBacklinks(params.path, root, { collectMdFiles });
 			const linkText = formatWikiLinks(links);
 			const backlinkText = formatBacklinks(backlinks);
+			const ambiguityText = ambiguity ? `\n\n\u26A0\uFE0F ${ambiguity}` : "";
 			return {
-				content: [{ type: "text", text: content + linkText + backlinkText }],
-				details: { path: params.path, links, backlinks, description: fm.description, importance: fm.importance },
+				content: [{ type: "text", text: content + linkText + backlinkText + ambiguityText }],
+				details: { path: params.path, links, backlinks, description: fm.description, importance: fm.importance, ambiguity },
 			};
 		},
 	});
@@ -818,25 +836,36 @@ export default function (pi: ExtensionAPI) {
 			}
 			const tags = params.tags || [];
 			const importance = params.importance ?? 3;
+
+			let targetPath: string;
+			try {
+				targetPath = canonicalizeMemoryPath(params.path);
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `\u274C ${(err as Error).message}` }],
+					details: {},
+				};
+			}
+
 			const frontmatter = generateFrontmatter(params.description, tags, importance, agentUuid);
 			const fullContent = frontmatter + params.content;
 
-			const fullPath = path.join(root, params.path);
+			const fullPath = path.join(root, targetPath);
 
 			// Ensure git repo exists
 			if (!isGitRepo(root)) {
 				initGitRepo(root);
 			}
 
-			if (writeMemoryFile(params.path, fullContent, root)) {
-				gitCommit(fullPath, `${params.path}: ${params.description}`, root);
+			if (writeMemoryFile(targetPath, fullContent, root)) {
+				gitCommit(fullPath, `${targetPath}: ${params.description}`, root);
 				return {
-					content: [{ type: "text", text: `\u2705 Written to ${params.path} and committed.` }],
-					details: { path: params.path, description: params.description, importance, tags },
+					content: [{ type: "text", text: `\u2705 Written to ${targetPath} and committed.` }],
+					details: { path: targetPath, description: params.description, importance, tags },
 				};
 			} else {
 				return {
-					content: [{ type: "text", text: `\u274C Failed to write ${params.path}` }],
+					content: [{ type: "text", text: `\u274C Failed to write ${targetPath}` }],
 					details: {},
 				};
 			}
@@ -1627,16 +1656,20 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 			const root = resolveMemoryRoot();
 			if (!root) return;
-			const content = readMemoryFile(filePath, root);
-			if (content === null) {
+			const resolved = readMemoryFile(filePath, root);
+			if (resolved === null) {
 				ctx.ui.notify(`File not found: ${filePath}`, "warning");
 				return;
 			}
+			const { content, ambiguity } = resolved;
 			const fm = parseFrontmatter(content);
 			const links = extractWikiLinks(fm.body);
 			const backlinks = findBacklinks(filePath, root, { collectMdFiles });
 			const display = content.length > 1000 ? content.slice(0, 1000) + "\n\n...(truncated)..." : content;
 			ctx.ui.notify(display, "info");
+			if (ambiguity) {
+				ctx.ui.notify(`\u26A0\uFE0F ${ambiguity}`, "warning");
+			}
 			if (links.length > 0) {
 				ctx.ui.notify(`\u{1F517} Links: ${links.join(", ")}`, "info");
 			}
