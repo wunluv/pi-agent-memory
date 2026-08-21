@@ -54,7 +54,7 @@ import {
 	type SyncConfig,
 	type SyncEnv,
 } from "./sync";
-import { canonicalizeMemoryPath } from "./paths";
+import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile } from "./paths";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -205,43 +205,6 @@ function collectMdFiles(dir: string): string[] {
 		// directory doesn't exist
 	}
 	return results;
-}
-
-/** Read a file relative to a memory root, resolving to its canonical .md form. */
-function readMemoryFile(filePath: string, root: string): { content: string; ambiguity: string | null } | null {
-	let canonical: string;
-	try {
-		canonical = canonicalizeMemoryPath(filePath);
-	} catch {
-		return null;
-	}
-	const full = path.join(root, canonical);
-	let content: string;
-	try {
-		content = fs.readFileSync(full, "utf-8");
-	} catch {
-		return null;
-	}
-	let ambiguity: string | null = null;
-	if (canonical !== filePath) {
-		const bare = path.join(root, filePath);
-		if (bare !== full && fs.existsSync(bare)) {
-			ambiguity = `Both "${filePath}" and "${canonical}" exist on disk (differ only by extension/case). Returning "${canonical}".`;
-		}
-	}
-	return { content, ambiguity };
-}
-
-/** Write a file relative to a memory root, creating directories as needed */
-function writeMemoryFile(filePath: string, content: string, root: string): boolean {
-	const full = path.join(root, filePath);
-	try {
-		fs.mkdirSync(path.dirname(full), { recursive: true });
-		fs.writeFileSync(full, content, "utf-8");
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 /** Parse frontmatter from markdown content */
@@ -837,38 +800,35 @@ export default function (pi: ExtensionAPI) {
 			const tags = params.tags || [];
 			const importance = params.importance ?? 3;
 
-			let targetPath: string;
-			try {
-				targetPath = canonicalizeMemoryPath(params.path);
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `\u274C ${(err as Error).message}` }],
-					details: {},
-				};
-			}
-
 			const frontmatter = generateFrontmatter(params.description, tags, importance, agentUuid);
 			const fullContent = frontmatter + params.content;
-
-			const fullPath = path.join(root, targetPath);
 
 			// Ensure git repo exists
 			if (!isGitRepo(root)) {
 				initGitRepo(root);
 			}
 
-			if (writeMemoryFile(targetPath, fullContent, root)) {
-				gitCommit(fullPath, `${targetPath}: ${params.description}`, root);
+			// writeMemoryFile canonicalizes internally (enforce .md + reserved names, refuse non-.md)
+			const targetPath = writeMemoryFile(params.path, fullContent, root);
+			if (targetPath === null) {
+				// disambiguate a refusal (invalid extension) from a plain write failure
+				let msg = `Failed to write ${params.path}`;
+				try {
+					canonicalizeMemoryPath(params.path);
+				} catch (err) {
+					msg = (err as Error).message;
+				}
 				return {
-					content: [{ type: "text", text: `\u2705 Written to ${targetPath} and committed.` }],
-					details: { path: targetPath, description: params.description, importance, tags },
-				};
-			} else {
-				return {
-					content: [{ type: "text", text: `\u274C Failed to write ${targetPath}` }],
+					content: [{ type: "text", text: `\u274C ${msg}` }],
 					details: {},
 				};
 			}
+
+			gitCommit(path.join(root, targetPath), `${targetPath}: ${params.description}`, root);
+			return {
+				content: [{ type: "text", text: `\u2705 Written to ${targetPath} and committed.` }],
+				details: { path: targetPath, description: params.description, importance, tags },
+			};
 		},
 	});
 

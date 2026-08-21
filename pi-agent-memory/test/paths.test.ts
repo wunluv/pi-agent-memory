@@ -3,7 +3,14 @@
  * Run with: node test/paths.test.ts
  */
 import * as assert from "node:assert/strict";
-import { canonicalizeMemoryPath, RESERVED_FILENAMES } from "../paths.ts";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, RESERVED_FILENAMES } from "../paths.ts";
+
+function tmpRoot(): string {
+	return fs.mkdtempSync(path.join(os.tmpdir(), "paths-test-"));
+}
 
 function test(name: string, fn: () => void) {
 	try {
@@ -49,4 +56,50 @@ test("refuses non-.md extensions", () => {
 
 test("reserved set is the documented five", () => {
 	assert.deepEqual([...RESERVED_FILENAMES].sort(), ["index", "status", "strategy", "wbs", "wip"]);
+});
+
+test("writeMemoryFile writes the canonical .md form", () => {
+	const root = tmpRoot();
+	const p = writeMemoryFile("reference/status", "# body", root);
+	assert.equal(p, "reference/status.md");
+	assert.equal(fs.readFileSync(path.join(root, "reference/status.md"), "utf-8"), "# body");
+	assert.equal(fs.existsSync(path.join(root, "reference/status")), false);
+});
+
+test("writeMemoryFile lowercases reserved names", () => {
+	const root = tmpRoot();
+	const p = writeMemoryFile("WIP.md", "# wip", root);
+	assert.equal(p, "wip.md");
+	assert.equal(fs.existsSync(path.join(root, "wip.md")), true);
+});
+
+test("writeMemoryFile refuses a non-.md extension", () => {
+	const root = tmpRoot();
+	assert.equal(writeMemoryFile("foo.json", "x", root), null);
+	assert.equal(fs.existsSync(path.join(root, "foo.json")), false);
+});
+
+test("readFile resolves a bare name to the canonical .md", () => {
+	const root = tmpRoot();
+	writeMemoryFile("status", "# status-only", root);
+	const r = readMemoryFile("status", root);
+	assert.notEqual(r, null);
+	assert.equal(r!.content, "# status-only");
+	assert.equal(r!.ambiguity, null);
+});
+
+test("readFile flags an extension/case sibling as ambiguous", () => {
+	const root = tmpRoot();
+	writeMemoryFile("status", "# canonical", root); // writes status.md
+	fs.writeFileSync(path.join(root, "status"), "# legacy bare", "utf-8"); // bare sibling
+	const r = readMemoryFile("status", root);
+	assert.notEqual(r, null);
+	assert.equal(r!.content, "# canonical"); // returns the .md canonical
+	assert.notEqual(r!.ambiguity, null);
+	assert.match(r!.ambiguity!, /both "status" and "status.md"/i);
+});
+
+test("readFile returns null when missing", () => {
+	const root = tmpRoot();
+	assert.equal(readMemoryFile("reference/nothing", root), null);
 });
