@@ -55,6 +55,7 @@ import {
 	type SyncEnv,
 } from "./sync";
 import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile } from "./paths";
+import { ensureMemoryIgnored } from "./gitignore";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -1425,6 +1426,12 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 
+			const ignore = ensureMemoryIgnored(resolvedPath, git, isGitRepo);
+			if (!ignore.ok) {
+				ctx.ui.notify(`Refusing to bootstrap: ".memory" is already tracked by the repo at ${resolvedPath}. Untrack it first — the methodology boundary: .memory/ must never be committed.`, "warning");
+				return;
+			}
+
 			const result = bootstrapMemory(resolvedPath);
 			if (!result) {
 				ctx.ui.notify(`Failed to bootstrap .memory/ at ${resolvedPath}.`, "warning");
@@ -1531,6 +1538,11 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				["yes", "no"],
 			);
 			if (choice === "yes") {
+				const ignore = ensureMemoryIgnored(resolvedPath, git, isGitRepo);
+				if (!ignore.ok) {
+					ctx.ui.notify(`Refusing to bootstrap: ".memory" is git-tracked by the repo at ${resolvedPath}. Untrack it first.`, "warning");
+					return;
+				}
 				const result = bootstrapMemory(resolvedPath);
 				if (!result) {
 					ctx.ui.notify(`Failed to bootstrap .memory/ at ${resolvedPath}.`, "warning");
