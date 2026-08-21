@@ -26,10 +26,17 @@ import {
 import {
 	configureRepoAuthor,
 	ensureAgentIdentity,
+	ensureProjectUuid,
+	findMemberUuid,
+	findProjectByName,
 	loadAgentIdentity,
 	loadOrgRegistry,
-	saveOrgRegistry,
+	lookupProject,
+	mintProjectUuid,
+	readProjectUuid,
 	registerMember,
+	registerProject,
+	saveOrgRegistry,
 	shortUuid,
 	type IdentityEnv,
 } from "./identity";
@@ -137,12 +144,16 @@ interface ProjectEntry {
 }
 
 /**
- * Look up a project by name in system/projects.md. Matches the "**Name**"
- * header exactly (case-insensitive), then reads the first path-looking backtick
- * token on a continuation line. Does NOT substring-match over prose — the
- * caller must exclude path-like inputs first (see isPathLike).
+ * Look up a project by name. Authoritative source is the org registry's
+ * uuid-keyed projects section (scanned by the mutable `name` field, #13);
+ * falls back to parsing system/projects.md (the demoted human-readable index).
+ * Does NOT substring-match over prose — the caller must exclude path-like
+ * inputs first (see isPathLike).
  */
 function findProjectEntry(name: string): ProjectEntry | null {
+	const found = findProjectByName(identityEnv, name);
+	if (found) return { name: found.name, path: found.path };
+
 	const agentRoot = getAgentMemoryRoot();
 	if (!agentRoot) return null;
 	const projectsFile = path.join(agentRoot, "system", "projects.md");
@@ -588,6 +599,108 @@ Available tools: memory_tree, memory_read, memory_write, memory_search, memory_r
 	return sections.join("\n");
 }
 
+// ─── Project bootstrap (shared by /memory:init and /startwork) ──────────────
+
+interface BootstrapResult {
+	memoryPath: string;
+	pattern: "org" | "standalone";
+	subProjects: string[];
+	uuid: string;
+}
+
+/** Bootstrap .memory/ in a project directory (org vs standalone). Returns a summary or null. */
+function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
+	try {
+		const memoryPath = path.join(resolvedPath, ".memory");
+
+		// Detect org vs standalone
+		let isOrg = false;
+		const subProjects: string[] = [];
+		const entries = fs.readdirSync(resolvedPath, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+			const subPath = path.join(resolvedPath, entry.name);
+			if (fs.existsSync(path.join(subPath, "package.json")) || fs.existsSync(path.join(subPath, ".git"))) {
+				subProjects.push(entry.name);
+			}
+		}
+		isOrg = subProjects.length >= 2;
+
+		fs.mkdirSync(path.join(memoryPath, "reference"), { recursive: true });
+		fs.mkdirSync(path.join(memoryPath, "project_insights", "analyses"), { recursive: true });
+		fs.mkdirSync(path.join(memoryPath, "project_insights", "wisdom"), { recursive: true });
+		initGitRepo(memoryPath);
+
+		// project.json — the project's immutable soul identity (uuid only; name/path are registry-owned)
+		const uuid = ensureProjectUuid(memoryPath);
+
+		const now = new Date().toISOString().split("T")[0];
+		const projectName = path.basename(resolvedPath);
+
+		if (isOrg) {
+			const indexContent = `# ${projectName} — Project Index\n\n**Last updated:** ${now}\n\n## Sub-Projects\n\n${
+				subProjects.map((sp) => `| ${sp} | Pending | [[reference/${sp}/status]] |`).join("\n")
+			}\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
+			writeMemoryFile("reference/index.md",
+				generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
+
+			const strategyContent = `# ${projectName} — Strategy\n\n**Last updated:** ${now}\n\n## Current Priorities\n\nTBD\n\n## Dependency Map\n\nTBD\n\n## Revenue / Budget\n\nTBD\n`;
+			writeMemoryFile("reference/strategy.md",
+				generateFrontmatter(`${projectName} strategy and roadmap`, ["strategy"], 5) + strategyContent, memoryPath);
+
+			for (const sp of subProjects) {
+				fs.mkdirSync(path.join(memoryPath, "reference", sp), { recursive: true });
+				const statusContent = `# ${sp} — Status\n\n**Last updated:** ${now}\n\n## Current\n\n- Status pending\n\n## Plan\n\n- TBD\n\n## History\n\n- ${now}: .memory/ initialized\n`;
+				writeMemoryFile(`reference/${sp}/status.md`,
+					generateFrontmatter(`${sp} project status`, ["status", sp], 4) + statusContent, memoryPath);
+			}
+		} else {
+			const indexContent = `# ${projectName}\n\n**Last updated:** ${now}\n\n## Status\n\nSee [[reference/status]]\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
+			writeMemoryFile("reference/index.md",
+				generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
+
+			const statusContent = `# ${projectName} — Status\n\n**Last updated:** ${now}\n\n## Current\n\n- Status pending\n\n## Plan\n\n- TBD\n\n## History\n\n- ${now}: .memory/ initialized\n`;
+			writeMemoryFile("reference/status.md",
+				generateFrontmatter(`${projectName} operational status`, ["status"], 4) + statusContent, memoryPath);
+		}
+
+		git(["add", "-A"], memoryPath);
+		git(["commit", "-m", `init: Bootstrap .memory/ for ${projectName}`], memoryPath);
+
+		return { memoryPath, pattern: isOrg ? "org" : "standalone", subProjects, uuid };
+	} catch {
+		return null;
+	}
+}
+
+/** Both absolute and ~-relative forms of a path, for projects.md rewrite. */
+function pathForms(oldPath: string, newPath: string): Array<[string, string]> {
+	const forms: Array<[string, string]> = [[oldPath, newPath]];
+	const home = os.homedir();
+	if (oldPath.startsWith(home + path.sep)) {
+		forms.push(["~" + oldPath.slice(home.length), "~" + newPath.slice(home.length)]);
+	}
+	return forms;
+}
+
+/** Best-effort: rewrite the path token for a project in system/projects.md (human index). */
+function updateProjectsMdPath(name: string, oldPath: string, newPath: string): void {
+	const agentRoot = getAgentMemoryRoot();
+	if (!agentRoot) return;
+	const projectsFile = path.join(agentRoot, "system", "projects.md");
+	if (!fs.existsSync(projectsFile)) return;
+	try {
+		let content = fs.readFileSync(projectsFile, "utf-8");
+		for (const [from, to] of pathForms(oldPath, newPath)) {
+			if (from) content = content.split(from).join(to);
+		}
+		fs.writeFileSync(projectsFile, content, "utf-8");
+		gitCommit(projectsFile, `projects.md: reconcile ${name} path`, agentRoot);
+	} catch {
+		// best-effort — the authoritative registry is already updated
+	}
+}
+
 // ─── Extension Entry Point ────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -995,11 +1108,12 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 
 			const reg = loadOrgRegistry(identityEnv);
-			const member = reg.members[name];
-			if (!member) {
+			const memberUuid = findMemberUuid(identityEnv, name);
+			if (!memberUuid) {
 				ctx.ui.notify(`Agent "${name}" not in org registry. Run /agent:init ${name} first.`, "warning");
 				return;
 			}
+			const member = reg.members[memberUuid];
 			if (member.status === "member") {
 				ctx.ui.notify(`Agent "${name}" is already a member.`, "info");
 				return;
@@ -1322,90 +1436,27 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 
-			// Detect project type: org vs standalone
-			let isOrg = false;
-			const subProjects: string[] = [];
-			try {
-				const entries = fs.readdirSync(resolvedPath, { withFileTypes: true });
-				for (const entry of entries) {
-					if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-					const subPath = path.join(resolvedPath, entry.name);
-					// Check if sub-dir looks like a project (has package.json or is a git repo)
-					if (fs.existsSync(path.join(subPath, "package.json")) || fs.existsSync(path.join(subPath, ".git"))) {
-						subProjects.push(entry.name);
-					}
-				}
-				isOrg = subProjects.length >= 2;
-			} catch {
-				// ignore
+			const result = bootstrapMemory(resolvedPath);
+			if (!result) {
+				ctx.ui.notify(`Failed to bootstrap .memory/ at ${resolvedPath}.`, "warning");
+				return;
 			}
 
-			// Create .memory/ structure
-			fs.mkdirSync(path.join(memoryPath, "reference"), { recursive: true });
-			fs.mkdirSync(path.join(memoryPath, "project_insights", "analyses"), { recursive: true });
-			fs.mkdirSync(path.join(memoryPath, "project_insights", "wisdom"), { recursive: true });
-			initGitRepo(memoryPath);
-
-			const now = new Date().toISOString().split("T")[0];
-
-			if (isOrg) {
-				// Organisation pattern
-				const projectName = path.basename(resolvedPath);
-
-				// Index
-				const indexContent = `# ${projectName} — Project Index\n\n**Last updated:** ${now}\n\n## Sub-Projects\n\n${
-					subProjects.map((sp) => `| ${sp} | Pending | [[reference/${sp}/status]] |`).join("\n")
-				}\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
-				writeMemoryFile("reference/index.md",
-					generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
-
-				// Strategy stub
-				const strategyContent = `# ${projectName} — Strategy\n\n**Last updated:** ${now}\n\n## Current Priorities\n\nTBD\n\n## Dependency Map\n\nTBD\n\n## Revenue / Budget\n\nTBD\n`;
-				writeMemoryFile("reference/strategy.md",
-					generateFrontmatter(`${projectName} strategy and roadmap`, ["strategy"], 5) + strategyContent, memoryPath);
-
-				// Per-sub-project status stubs
-				for (const sp of subProjects) {
-					const subDir = path.join(memoryPath, "reference", sp);
-					fs.mkdirSync(subDir, { recursive: true });
-					const statusContent = `# ${sp} — Status\n\n**Last updated:** ${now}\n\n## Current\n\n- Status pending\n\n## Plan\n\n- TBD\n\n## History\n\n- ${now}: .memory/ initialized\n`;
-					writeMemoryFile(`reference/${sp}/status.md`,
-						generateFrontmatter(`${sp} project status`, ["status", sp], 4) + statusContent, memoryPath);
-				}
-
+			if (result.pattern === "org") {
 				ctx.ui.notify(
-					`\u2705 Organisation memory initialized at ${memoryPath}\n` +
-					`   Pattern: org with ${subProjects.length} sub-projects\n` +
-					`   Created: index.md, strategy.md, ${subProjects.length} status stubs\n` +
+					`\u2705 Organisation memory initialized at ${result.memoryPath}\n` +
+					`   Pattern: org with ${result.subProjects.length} sub-projects\n` +
 					`   Next: edit strategy.md and per-project status docs`,
 					"success",
 				);
 			} else {
-				// Standalone pattern
-				const projectName = path.basename(resolvedPath);
-
-				// Index
-				const indexContent = `# ${projectName}\n\n**Last updated:** ${now}\n\n## Status\n\nSee [[reference/status]]\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
-				writeMemoryFile("reference/index.md",
-					generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
-
-				// Status
-				const statusContent = `# ${projectName} — Status\n\n**Last updated:** ${now}\n\n## Current\n\n- Status pending\n\n## Plan\n\n- TBD\n\n## History\n\n- ${now}: .memory/ initialized\n`;
-				writeMemoryFile("reference/status.md",
-					generateFrontmatter(`${projectName} operational status`, ["status"], 4) + statusContent, memoryPath);
-
 				ctx.ui.notify(
-					`\u2705 Project memory initialized at ${memoryPath}\n` +
+					`\u2705 Project memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: standalone\n` +
-					`   Created: index.md, status.md\n` +
 					`   Next: edit status.md with current state`,
 					"success",
 				);
 			}
-
-			// Initial commit
-			git(["add", "-A"], memoryPath);
-			git(["commit", "-m", `init: Bootstrap .memory/ for ${path.basename(resolvedPath)}`], memoryPath);
 		},
 	});
 
@@ -1420,43 +1471,87 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 
 			// Try to resolve as a path first
-			let resolvedPath = input.startsWith("/") || input.startsWith("~")
+			const resolvedPath = input.startsWith("/") || input.startsWith("~")
 				? input.replace(/^~/, os.homedir())
 				: path.resolve(input);
 
-			let memoryPath = path.join(resolvedPath, ".memory");
+			const memoryPath = path.join(resolvedPath, ".memory");
 
-			// If .memory/ doesn't exist at the path, and the input is a bare
-			// project name (not a path), look it up in system/projects.md.
-			if (!fs.existsSync(memoryPath) && !isPathLike(input)) {
-				const entry = findProjectEntry(input);
-				if (entry) {
-					resolvedPath = entry.path;
-					memoryPath = path.join(entry.path, ".memory");
-				}
-			}
-
-			if (!fs.existsSync(memoryPath)) {
+			const begin = (root: string) => {
+				sessionMemoryRoot = root;
+				const tree = buildTreeView("reference", root);
 				ctx.ui.notify(
-					`.memory/ not found. Run /memory:init first, or check the path.\n` +
-					`Looked at: ${memoryPath}`,
-					"warning",
+					`\u2705 Session root set: ${root}\n\n${tree}\n\nWhat are we working on today?`,
+					"success",
 				);
+			};
+
+			// Case A: .memory/ exists → reconcile by project.json uuid (no heuristic)
+			if (fs.existsSync(memoryPath)) {
+				const uuid = readProjectUuid(memoryPath);
+				if (uuid) {
+					const registered = lookupProject(identityEnv, uuid);
+					if (registered && registered.path !== resolvedPath) {
+						// Same soul at a different path: a move OR a fork (cp -r carries the uuid).
+						const choice = await ctx.ui.select(
+							`"${registered.name}" is registered at ${registered.path}, but its project.json lives here (${resolvedPath}).`,
+							["update", "cancel", "mint a fresh uuid"],
+						);
+						if (choice === "update") {
+							registerProject(identityEnv, uuid, registered.name, resolvedPath, registered.humans, agentUuid);
+							updateProjectsMdPath(registered.name, registered.path, resolvedPath);
+						} else if (choice === "mint a fresh uuid") {
+							// fork — give this copy its own soul, never silently merge
+							const fresh = mintProjectUuid(memoryPath);
+							git(["add", "project.json"], memoryPath);
+							git(["commit", "-m", "identity: mint fresh project uuid (fork)"], memoryPath);
+							registerProject(identityEnv, fresh, path.basename(resolvedPath), resolvedPath, [], agentUuid);
+						}
+						// "cancel" → no registry write; proceed with the session
+					} else if (!registered) {
+						// project.json exists but the uuid is unknown to the registry → register it
+						registerProject(identityEnv, uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
+					}
+					// registered && same path → already reconciled, no-op
+				}
+				// uuid null (legacy, no project.json) → proceed, no registry write (#22 mints it)
+				begin(memoryPath);
 				return;
 			}
 
-			// Set session root
-			sessionMemoryRoot = memoryPath;
+			// Case B: no .memory/ at the path; a bare name resolves through the registry or projects.md
+			if (!isPathLike(input)) {
+				const entry = findProjectEntry(input);
+				if (entry) {
+					if (fs.existsSync(path.join(entry.path, ".memory"))) {
+						begin(path.join(entry.path, ".memory"));
+						return;
+					}
+					ctx.ui.notify(
+						`"${input}" is registered at ${entry.path}, but .memory/ wasn't found there.\n` +
+						`The project may have moved — cd into it and run /startwork . to reconcile the path.`,
+						"warning",
+					);
+					return;
+				}
+			}
 
-			// Load eagle eye
-			const tree = buildTreeView("reference", memoryPath);
-
-			ctx.ui.notify(
-				`\u2705 Session root set: ${memoryPath}\n` +
-				`\n${tree}\n` +
-				`\nWhat are we working on today?`,
-				"success",
+			// Case C: still no .memory/ → offer to bootstrap
+			const choice = await ctx.ui.select(
+				`.memory/ not found at ${memoryPath}. Run /memory:init?`,
+				["yes", "no"],
 			);
+			if (choice === "yes") {
+				const result = bootstrapMemory(resolvedPath);
+				if (!result) {
+					ctx.ui.notify(`Failed to bootstrap .memory/ at ${resolvedPath}.`, "warning");
+					return;
+				}
+				registerProject(identityEnv, result.uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
+				begin(result.memoryPath);
+			} else {
+				ctx.ui.notify("No session started.", "info");
+			}
 		},
 	});
 

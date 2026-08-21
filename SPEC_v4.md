@@ -33,7 +33,7 @@ ZONE C — Session Archive (Pi-managed)             .pi/sessions/
     │   ├── human/                   # What the agent knows about the user
     │   │   ├── identity.md          # Background, motivations, drives
     │   │   └── preferences.md       # Communication style, work patterns
-    │   ├── projects.md              # Lightweight index: project name → path ([[links]])
+    │   ├── projects.md              # Human-readable index ([[links]]); authoritative path lives in the org registry
     │   └── infrastructure.md        # Servers, services, tooling
     │
     ├── knowledge/                   ← LAZY: general/personal knowledge (renamed from reference/, 2026-08)
@@ -477,7 +477,7 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 ### 2.3 Root Resolution & Discovery
 
 - `resolveMemoryRoot` walks up from a stable current-project signal (not raw cwd); resolved once per session, cached
-- Deterministic registry (`registry.json`) — authoritative name→path lookup, ONE shared file in the org root (`~/.pi/org/registry.json`), read by every agent. Never a per-agent copy. **Correction to the earlier #13 framing:** registry.json cannot live in "Zone A" if Zone A is per-agent — N copies = drift. It lives in the shared org root (strict parser landed in issue #1)
+- Deterministic registry (`registry.json`) — authoritative uuid→name/path lookup, ONE shared file in the org root (`~/.pi/org/registry.json`), read by every agent. Never a per-agent copy. **Correction to the earlier #13 framing:** registry.json cannot live in "Zone A" if Zone A is per-agent — N copies = drift. It lives in the shared org root (strict parser landed in issue #1)
 - Robust `/startwork` — reconcile a stale registry path on move (yes/no prompt) and offer `/memory:init` when `.memory/` is absent (issue #13)
 - `/startwork` becomes a ritual (eagle eye + priorities), not a gate
 
@@ -518,10 +518,13 @@ The project's authoritative team binding. Answers one question: **who serves thi
 
 ```
 ~/.pi/org/
-  registry.json     — projects (name → path, #13) + members (name → Zone A path, UUID, status, #7)
+  registry.json     — projects (uuid → name/path/humans, #13) + members (uuid → name/status/path, #7) + humans (uuid → name/agents)
   roles/            — role library (hats): shared role specs, evolved by wearers
   README.md         — what this is, read/write rules, single-writer note
 ```
+
+> Entity model (identity vs name vs path, Human/Agent/Project/Org entities) is
+> documented in `docs/DATA-MODEL.md` (revised 2026-08-20).
 
 - **`registry.json` is an aggregate file** — single-writer convention (per #14's concurrency model): the orchestrator or a designated writer merges deliberately. Writes are rare and gated: `/startwork` reconcile (projects), `/agent:init` + promotion (members).
 - **`roles/` is the planned home of the shared role library** (the hats). Seam noted, not solved: methodology-specific role sets (Heaven's `pi-agents/`) may stay in their owning repo or migrate later.

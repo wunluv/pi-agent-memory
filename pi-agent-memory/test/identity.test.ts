@@ -15,6 +15,13 @@ import {
 	shortUuid,
 	loadAgentIdentity,
 	loadOrgRegistry,
+	lookupProject,
+	registerProject,
+	ensureProjectUuid,
+	findMemberUuid,
+	findProjectByName,
+	mintProjectUuid,
+	readProjectUuid,
 	saveOrgRegistry,
 	ensureAgentIdentity,
 	type IdentityEnv,
@@ -68,12 +75,13 @@ assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
 	assert.equal(agentJson.uuid, res.uuid);
 	assert.equal(agentJson.name, "alpha");
 
-	// thin index: org registry holds the member row, not the identity content
+	// thin index: org registry holds the member row, keyed by uuid, not name
 	const reg = loadOrgRegistry(env);
-	assert.ok(reg.members.alpha);
-	assert.equal(reg.members.alpha.uuid, res.uuid);
-	assert.equal(reg.members.alpha.status, "ephemeral");
-	assert.equal(reg.members.alpha.memoryPath, "~/.pi/agents/alpha/memory");
+	assert.ok(reg.members[res.uuid]);
+	assert.equal(reg.members[res.uuid].name, "alpha");
+	assert.equal(reg.members[res.uuid].status, "ephemeral");
+	assert.equal(reg.members[res.uuid].memoryPath, "~/.pi/agents/alpha/memory");
+	assert.equal(findMemberUuid(env, "alpha"), res.uuid, "name → uuid lookup");
 
 	// agent repo git author = agent-<short>
 	const agentRepo = path.join(env.agentsDir, "alpha", "memory");
@@ -138,8 +146,8 @@ assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
 	const catchUpFiles = git(["show", "--name-only", "--format=", "HEAD~1"], agentRepo).stdout.trim().split("\n").filter(Boolean);
 	assert.deepEqual(catchUpFiles, ["system/notes.md"]);
 
-	// backfilled agent is registered in the org too
-	assert.ok(loadOrgRegistry(env).members.beta);
+	// backfilled agent is registered in the org too (keyed by uuid)
+	assert.ok(loadOrgRegistry(env).members[res.uuid]);
 }
 
 // ─── legacy backfill on unborn HEAD (zero-commit repo) ───────────────────────
@@ -179,11 +187,11 @@ assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
 	assert.ok(res);
 
 	const reg = loadOrgRegistry(env);
-	assert.equal(reg.members.gamma.status, "ephemeral");
-	reg.members.gamma.status = "member";
+	assert.equal(reg.members[res.uuid].status, "ephemeral");
+	reg.members[res.uuid].status = "member";
 	assert.ok(saveOrgRegistry(env, reg, res.uuid));
 
-	assert.equal(loadOrgRegistry(env).members.gamma.status, "member");
+	assert.equal(loadOrgRegistry(env).members[res.uuid].status, "member");
 }
 
 // ─── loadAgentIdentity null cases ────────────────────────────────────────────
@@ -192,6 +200,80 @@ assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
 	const env = makeEnv();
 	assert.equal(loadAgentIdentity(env, null), null);
 	assert.equal(loadAgentIdentity(env, "does-not-exist"), null);
+}
+
+// ─── project.json identity: read / ensure / mint ────────────────────────────────
+
+{
+	const env = makeEnv();
+	const mem = path.join(env.agentsDir, "proj", "memory");
+	fs.mkdirSync(mem, { recursive: true });
+
+	// absent → null (legacy, unidentifiable)
+	assert.equal(readProjectUuid(mem), null);
+
+	// ensure mints once, then round-trips (idempotent)
+	const u1 = ensureProjectUuid(mem);
+	assert.ok(u1, "mints a uuid");
+	assert.equal(readProjectUuid(mem), u1);
+	assert.equal(ensureProjectUuid(mem), u1, "ensure never regenerates");
+
+	// mint force-replaces (fork action)
+	const u2 = mintProjectUuid(mem);
+	assert.notEqual(u2, u1, "mint gives a fresh uuid");
+	assert.equal(readProjectUuid(mem), u2);
+
+	// project.json carries ONLY the uuid — no name, no path
+	const parsed = JSON.parse(fs.readFileSync(path.join(mem, "project.json"), "utf-8"));
+	assert.deepEqual(Object.keys(parsed).sort(), ["uuid"]);
+}
+
+// ─── project registry round-trip (uuid-keyed) ──────────────────────────────────
+
+{
+	const env = makeEnv();
+	const uuid = "11111111-2222-3333-4444-555555555555";
+	assert.equal(lookupProject(env, uuid), null);
+	assert.ok(registerProject(env, uuid, "bttn", "/abs/path/bttn"));
+	assert.equal(lookupProject(env, uuid)!.path, "/abs/path/bttn");
+	assert.equal(findProjectByName(env, "bttn")!.uuid, uuid, "name → uuid lookup");
+
+	// reconcile (re-register) updates the path under the same uuid
+	assert.ok(registerProject(env, uuid, "bttn", "/new/path/bttn"));
+	assert.equal(lookupProject(env, uuid)!.path, "/new/path/bttn");
+
+	// rename-proof: name is a mutable field, uuid is the stable key
+	assert.ok(registerProject(env, uuid, "bttn-renamed", "/new/path/bttn"));
+	assert.equal(findProjectByName(env, "bttn"), null);
+	assert.equal(findProjectByName(env, "bttn-renamed")!.uuid, uuid);
+	assert.equal(lookupProject(env, uuid)!.name, "bttn-renamed");
+}
+
+// ─── v1 → v2 migration: name-keyed registry normalizes to uuid-keyed ────────────
+
+{
+	const env = makeEnv();
+	fs.mkdirSync(env.orgRoot, { recursive: true });
+	const memberUuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+	fs.writeFileSync(
+		path.join(env.orgRoot, "registry.json"),
+		JSON.stringify({
+			version: 1,
+			updated: "2026-08-20",
+			projects: { heavencrm: "/home/u/DEV/Heaven/heavencrm", d5: "/home/u/DEV/Heaven/d5" },
+			members: { pialph: { name: "pialph", uuid: memberUuid, status: "ephemeral", memoryPath: "~/.pi/agents/pialph/memory" } },
+		}, null, 2) + "\n",
+	);
+
+	const reg = loadOrgRegistry(env);
+	// members re-keyed by uuid
+	assert.deepEqual(Object.keys(reg.members), [memberUuid]);
+	assert.equal(reg.members[memberUuid].name, "pialph");
+	assert.equal(reg.members[memberUuid].status, "ephemeral");
+	// v1 projects carried no uuid → dropped (legacy, unidentifiable until #22)
+	assert.deepEqual(reg.projects, {});
+	assert.deepEqual(reg.humans, {});
+	assert.equal(reg.version, 2);
 }
 
 console.log("identity.test.ts — all assertions passed");

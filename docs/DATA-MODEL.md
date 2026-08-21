@@ -1,53 +1,153 @@
 # pi-agent-memory — Data Model
 
-> Gate 1 deliverable. Entities, relationships, invariants, impossible states.
-> Applies the methodology: understand the data before writing code.
-> **Reviewed 2026-07-22.** See [data-model-review.md](data-model-review.md) for critique and resolutions.
+> Gate 1 deliverable, **revised 2026-08-20** to reflect the Phase 2 decisions
+> (identity/name/path split, Project/Human/Org entities, uuid-keyed registry,
+> #8 sync engine). Supersedes the 2026-07-22 version; that revision's critique
+> lives in [data-model-review.md](data-model-review.md).
 
-## Phase 1 Entities (Built)
+## The core distinction: Identity vs Name vs Path
+
+The single most important concept, and the source of most past fragility. These
+three axes were historically conflated into one value (the name/path):
+
+| Axis | Nature | Stored where | Sync scope |
+|------|--------|-------------|------------|
+| **Identity** | `uuid` — immutable, global, survives rename/move/copy | the identity file (`agent.json` / `project.json`) | **syncs** |
+| **Name** | human handle — mutable, human-facing | the directory name + a registry field | **syncs** |
+| **Path** | location — mutable, machine-local | the registry only | **does NOT sync** |
+
+Consequences:
+
+- The directory is keyed by **name**, not uuid — so the filesystem stays
+  human-readable (`~/.pi/agents/pialph/memory`, not `…/24168a68-…/memory`).
+- The uuid lives **inside** the identity file, never in the path.
+- Rename = rename dir + update the registry's `name`/`path`; the uuid never moves.
+- The path is **per-machine**: when a soul syncs, its name + uuid travel, its
+  path does not (#24 must not sync the registry's `path` field).
+
+---
+
+## Entity index
+
+| Entity | Required | Identity | Identity file | Location convention |
+|--------|----------|----------|---------------|---------------------|
+| Org | optional | `id` (uuid at multi-org scale) | registry.json | `~/.pi/org/` |
+| Human / Customer | yes (1 today) | `uuid` (at scale; not minted for the single-human case) | customer store (future) | — |
+| Agent | yes | `uuid` | `agent.json` | `~/.pi/agents/<name>/memory/` |
+| Project | yes | `uuid` | `project.json` | `<project-dir>/.memory/` |
+| MemoryRoot | — | `agent:<uuid>` or `project:<uuid>` | — | derived from owner |
+| MemoryFile | — | — | — | relative to a MemoryRoot |
+
+---
+
+## Phase 1 entities (built)
+
+### Org
+
+A named collection of agents, projects, and humans. Optional — the single-user
+case has exactly one implicit org.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | string | UUID when multiple orgs exist |
+| name | string | Human-readable org name |
+| root | path | `~/.pi/org/` — the org root |
+
+The org root holds the aggregate index (`registry.json`), the shared role
+library (`roles/`), and a `README.md` stating read/write rules.
+
+**Invariants:**
+- `registry.json` is an aggregate file with a single-writer convention — touched
+  only at gated transitions (recruitment, promotion, project moves).
+- Daily care writes land in per-soul repos, never in the shared index.
+
+### Human / Customer
+
+The person an agent serves. Today there is exactly one (San). At MSA/LP scale
+there are thousands, each owning a concierge agent.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | string | UUID at scale. **Not minted today** — one human needs no id yet. |
+| name | string | Human-readable name |
+
+**Relationships:** a Human owns Agents (1:N) and works on Projects (N:N) — many humans per project, many projects per human.
+
+**Invariants:**
+- A Human is the **principal**, not the soul. Their concierge is a separate
+  Agent entity with its own uuid.
+- The agent's `system/human/*.md` files are the agent's **model** of the human,
+  not the human's record. At scale, the human record lives in a customer store
+  (external to this system); the agent holds a scoped view.
 
 ### Agent
 
-The persistent identity of an agent. Independent of device, interface, or filesystem location.
+The persistent identity of an agent — independent of device, interface, or
+filesystem location.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| id | UUID | Canonical agent identifier (UUID v4). Persistent across devices. |
-| name | string | Human-readable name (e.g. "alph", "yeshua"). Unique within a deployment. |
-| display_name | string | Optional display name for interfaces |
+| id | uuid | Canonical identifier (UUID v4). Immutable. |
+| name | string | Human-readable name. The directory name under `~/.pi/agents/<name>/`. |
+| status | enum | `ephemeral` or `member` (org registry membership) |
 
 **Invariants:**
-- `id` is immutable — created at `/agent:init`, never changes
-- `name` is the directory name under `~/.pi/agents/<name>/`
-- An Agent owns exactly one Zone A MemoryRoot per device
+- `id` is immutable — created at `/agent:init`, never regenerated.
+- `name` is the directory name, not the uuid. The uuid lives in `agent.json`.
+- Rename = rename dir → update `agent.json.name` → update `registry[uuid].name` + `.path`. The uuid never moves.
+- An Agent owns exactly one Zone A MemoryRoot per device.
 
-**Design note:** The UUID provides a canonical identity that survives renames, device migrations, and sync. The 8-character prefix can be used for display (Letta pattern: 12-char hash displayed as short ID).
+### Project (new in this revision)
+
+A body of work with its own memory. Previously modeled only as `project:<name>`
+inside MemoryRoot; now a first-class soul.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | uuid | Canonical identifier. Immutable. |
+| name | string | Human-readable name. Lives **only in the registry** (mutable attribute). |
+| path | string | Absolute project directory. Lives **only in the registry**, machine-local. |
+
+**Invariants:**
+- `project.json` holds the uuid **only** — no name, no path (name and path would
+  drift against the registry, and path is machine-local).
+- The project directory is **user-owned** (arbitrary location); only the
+  `.memory/` subdirectory convention is fixed: `<project>/.memory/`.
+- Copy semantics: `cp -r project newproject` carries the uuid. Two directories
+  with the same uuid = a **fork**, not two projects. Reconciling a fork requires
+  an explicit "mint a fresh uuid" action (never silent).
+- Legacy projects without `project.json` are **unidentifiable until migrated**
+  — `/startwork` proceeds without a registry write; #22 mints their uuid.
+- The project's `.memory/` is **shared by all its humans** — git is the
+  multi-author mechanism (merge, conflict, blame). Each human's private
+  perspective lives in their own agent's Zone A, never in the project.
 
 ### MemoryRoot
 
-The anchor entity. Everything the memory system does resolves against a memory root.
+The anchor entity. Everything resolves against a memory root.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| id | string | `agent:<agent_id>` (Zone A) or `project:<project_name>` (Zone B) |
-| path | Path (string) | Absolute filesystem path |
+| id | string | `agent:<uuid>` (Zone A) or `project:<uuid>` (Zone B) |
+| path | Path | Absolute filesystem path |
 | zone | Zone | A (agent) or B (project) |
-| agent_id | UUID | Zone A only — the owning Agent |
-| project_name | string | Zone B only — logical project identifier |
+| owner_id | uuid | The owning Agent or Project |
 | git_repo | boolean | Is this path a git repo? |
 
 **States:**
-- Zone A: `~/.pi/agents/<name>/memory/` — always a git repo, may have remotes
-- Zone B: `<project>/.memory/` — always a git repo, NEVER has remotes
+- Zone A: `~/.pi/agents/<name>/memory/` — harness-owned, always a git repo.
+- Zone B: `<project>/.memory/` — user-owned, always a git repo.
 
 **Invariants:**
-- Two MemoryRoots on different devices with the same `id` are the same logical entity (different physical copies)
-- Zone B repos must never have a git remote configured
-- A MemoryRoot always has a `system/` directory for Zone A, or a `reference/` directory for Zone B
+- Two MemoryRoots on different devices with the same `id` are the same logical
+  entity (different physical copies).
+- Zone B repos may carry a **private** remote (#24); a public remote is an
+  impossible state.
+- A MemoryRoot has a `system/` dir (Zone A) or a `reference/` dir (Zone B).
 
 ### MemoryFile
 
-Any `.md` file under a MemoryRoot.
+Any `.md` file under a MemoryRoot. Unchanged from the 2026-07-22 model.
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -56,171 +156,141 @@ Any `.md` file under a MemoryRoot.
 | frontmatter | Frontmatter | description, importance, tags, created, updated |
 | wiki_links | string[] | `[[references]]` extracted from body |
 
-**Invariants:**
-- Every write is an atomic git commit
-- Frontmatter is auto-generated on write (description required, importance default 3)
-- Wiki-links point to paths within the same MemoryRoot
-
-**Limitations (explicitly scoped out):**
-- **No version history via memory tools.** Git preserves full history (`git log`, `git blame`), but `memory_read()` only returns the current tip. Historical versions are available via git CLI, not memory tools. This may change if agents need to answer "what did this file say before sync?"
-- **No file lifecycle events.** Creating, updating, and deleting MemoryFiles produce git commits, but there are no hooks or notifications for these events. Wiki-links to deleted files become dangling — no automatic cleanup.
+**Invariants:** every write is an atomic git commit; frontmatter auto-generated;
+wiki-links point within the same MemoryRoot.
 
 ### Session
 
-The runtime context binding an agent to a project via a specific interface.
+The runtime context binding an agent to a project via an interface. Unchanged.
 
 | Property | Type | Description |
 |----------|------|-------------|
 | agent | Agent reference | Which agent is active |
-| interface | enum | `tui`, `telegram`, `slack`, `whatsapp`, `rpc` — how the agent is accessed |
-| session_id | string | Pi session identifier (e.g. `telegram-alph`, `interactive-main`) |
+| interface | enum | `tui`, `telegram`, `slack`, `whatsapp`, `rpc` |
+| session_id | string | Pi session identifier |
 | memory_root | MemoryRoot \| null | Set by /startwork, cleared by /endwork |
 | project_path | string \| null | The project directory |
 
-**Invariants:**
-- Session root cleared on `session_start` hook — no cross-session leakage
-- When session root is null, all tools resolve to Zone A
-- Multiple sessions for the same Agent can coexist (e.g. TUI + Telegram), each with its own conversation context but shared Zone A memory
-
-**Design note:** The `interface` field was added after headless agent research confirmed Telegram/Slack/WhatsApp bots will create sessions. Same agent identity, different conversation contexts. Zone A memory is shared across all sessions; Zone B is scoped per session's `memory_root`.
+**Invariants:** session root cleared on `session_start`; null root → tools
+resolve to Zone A; multiple sessions per Agent coexist with shared Zone A.
 
 ---
 
-## Phase 2 Entities (To Build)
+## Identity files
 
-### GitRemote
+Two sibling files carry the immutable identity of a soul:
 
-A sync target for Zone A memory repos.
+- **`agent.json`** — `{ uuid, name, status }`, in the Zone A root.
+- **`project.json`** — `{ uuid }`, in the project `.memory/` root.
 
-| Property | Type | Description |
-|----------|------|-------------|
-| name | string | Remote name (e.g. "origin", "github", "pi-server") |
-| url | string | Git remote URL (HTTPS or SSH) |
-| protocol | enum | https, ssh, memfs |
-| auth | AuthConfig | Authentication method and credentials |
+The asymmetry is deliberate: `agent.json` carries `name` because agents are
+harness-owned and located by that name; `project.json` carries **only** the uuid
+because a project's name and path are mutable attributes owned by the registry.
 
-**AuthConfig:**
-```typescript
-type AuthConfig =
-  | { method: "ssh", key_path?: string }           // SSH key (default ~/.ssh/id_rsa)
-  | { method: "token", token: string }              // Personal access token
-  | { method: "credential_helper", helper: string } // git credential helper
-  | { method: "none" }                              // No auth (public repos, local network)
+---
+
+## The registry
+
+`~/.pi/org/registry.json` — the one shared index mapping stable uuids to mutable
+name + machine-local path, for both agents and projects.
+
+```json
+{
+  "version": 2,
+  "updated": "2026-08-20",
+  "projects": {
+    "<project-uuid>": { "name": "pi-agent-memory", "path": "/home/user/DEV/pi/agent_memory", "humans": ["<human-uuid>"] }
+  },
+  "members": {
+    "<agent-uuid>": { "name": "pialph", "status": "member", "memoryPath": "~/.pi/agents/pialph/memory" }
+  },
+  "humans": {
+    "<human-uuid>": { "name": "San", "agents": ["<agent-uuid>"] }
+  }
+}
 ```
 
-**Relationships:**
-- MemoryRoot (Zone A) → GitRemote (0:N) — an agent repo can push to multiple remotes
-- MemoryRoot (Zone B) → GitRemote (0:0) — FORBIDDEN. Zone B repos have no remotes.
-
 **Invariants:**
-- Push failures are non-blocking — write succeeds locally, failure is logged
-- Agent is notified on next session start if unpushed commits exist
-- Pull happens on session start or explicit command, never during tool calls
-- Zone B remote prohibition is enforced — adding a remote to Zone B is an impossible state
-
-**Configuration:** GitRemote is stored in `<MemoryRoot>/.git/config` (standard git remote). Managed via `memory_remote_add`/`memory_remote_remove` tools. Discovered via `git remote -v` on session start. The extension does not "know" about pi-memory-server — it only knows git remotes. The server is just a URL.
-
-### SyncPolicy
-
-Controls when push/pull happens. One policy per MemoryRoot — all remotes follow the same cadence.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| push_on_write | boolean | Push after every memory_write? Default: false |
-| pull_on_start | boolean | Pull on agent session start? Default: true |
-| conflict_strategy | enum | `last_write_wins` (current), `reject_diverged` (future) |
-
-**States:**
-- **Optimistic** (push_on_write=true): every write goes to server immediately. Latest version always available. Trade-off: write latency.
-- **Batch** (push_on_write=false): writes stay local. Push on /endwork or explicit command. Trade-off: possible divergence between devices.
-- **Pull-start** (pull_on_start=true): agent always has latest memory when it wakes up.
-
-**Invariants:**
-- SyncPolicy is per MemoryRoot — one policy governs all remotes attached to that root
-- Push never blocks a write — if push fails, write still succeeds locally
-- Additive single-file writes cannot produce merge conflicts (each file is independently versioned)
-- **Conflict policy for Phase 2:** Operations that could cause divergence (file deletion, directory restructuring) are local-only and not synced. Additive writes only across devices. This prevents the "device A deletes what device B modified" scenario. Full conflict resolution is deferred until usage patterns emerge.
-
-**Design note:** The "no merge conflicts" invariant holds for the current single-file additive pattern. Phase 2 archival features introduce deletion — we scope those as local-only operations to maintain the invariant. If cross-device deletion becomes necessary, we add `conflict_strategy: reject_diverged` and surface conflicts for human resolution.
+- Keyed by **uuid**, never name (rename-proof).
+- `name` is mutable and syncs; `path` is machine-local and must **not** sync (#24).
+- Single-writer convention; writes are gated (recruitment, promotion, project moves).
+- Relationships are stored once, at their owner: `humans[uuid].agents` (ownership) and `projects[uuid].humans` (membership ACL — open when absent, bound when present). No duplicated bindings.
+- Authorization lives in this binding layer, never in the memory layer.
 
 ---
 
-## Phase 2 Entities — Archival Search
+## Phase 2 — Sync (built, #8)
 
-### ArchivalDocument
+Replaces the earlier `GitRemote` + `SyncPolicy` entities. One config file per
+device governs sync; the remote is derived, not user-managed.
 
-A reference document indexed for semantic search.
+### SyncConfig
 
-| Property | Type | Description |
-|----------|------|-------------|
-| id | string | Unique identifier |
-| content | string | Full text of the document |
-| metadata | object | Source, date, tags, project, url |
-| indexed_at | ISO date | When this version was last indexed |
-
-**Relationships:**
-- MemoryRoot → ArchivalDocument (1:N) — a memory root may contain indexed documents
-
-**Invariants:**
-- Documents are additive — new versions replace old (delete old index entries, re-index)
-- Deleting a document removes it from the index entirely
-- The vector index is derived data — it can be rebuilt from all ArchivalDocuments at any time
-
-### VectorIndex
-
-The search index. Derived from ArchivalDocuments — not an independent source of truth.
+`~/.pi/memory-sync.json` (mode 600):
 
 | Property | Type | Description |
 |----------|------|-------------|
-| store_path | Path | Where the index lives on disk |
-| embedder | string | Model identifier (e.g. `all-MiniLM-L6-v2`) |
-| dimension | int | Embedding dimension (e.g. 384) |
-| document_count | int | Number of indexed documents |
-| last_rebuilt | ISO date | When the index was last fully rebuilt |
+| server_url | string | Base URL. Agent repo derives as `<server_url>/<uuid>.git`. |
+| push_on_commit | boolean | Async push after each Zone A commit. Default **true** when server_url set. |
+| pull_on_start | boolean | Auto-pull on session start. Default **true** when server_url set. |
 
 **Invariants:**
-- The VectorIndex is entirely derived from ArchivalDocuments — it can be deleted and rebuilt without data loss
-- `memory_archive_search()` queries the index; `memory_archive_store()` adds/updates documents and reindexes
-- Text search (`memory_search`) always works regardless of vector index state
-- How chunking works (size, overlap, strategy) is an implementation detail behind the `memory_archive_store` tool — not part of the data model
+- Sync is off entirely when `server_url` is unset.
+- **Scope: Zone A only (#8).** Zone B + org root sync = #24 (private-remote-only).
+- Push never blocks a write — fire-and-forget detached child, 60s ceiling,
+  never SIGKILLs git mid-operation.
+- Conflict policy: `pull --rebase --autostash`, **never force**. Same-file
+  conflict → abort, both sides intact, human resolves (gated write).
+- Repo-role guard: the engine pushes only the active agent's own Zone A repo.
+- Server = stateless bare repos (portable); first push auto-provisions (`git init --bare`).
 
-**Design note (from review):** The initial model over-specified chunking (Chunk entity, embedding vectors, 500-char segments). These are embedder implementation details. The domain concern is "I have documents, I want semantic search." The architecture (sentence-transformers + SQLite, heaven-search pattern) informs but does not define the data model. This leaves room to tune chunk size, switch embedders, or change the index format without changing the entity model.
+**Commands:** `/agent:sync` (manual pull-then-push), `/agent:pull <uuid>`
+(clone + verify + re-apply author), `/memory:sync-config` (get/set).
 
 ---
 
-## Relationship Map
+## Phase 2 — Archival search (future, #10)
+
+`ArchivalDocument` and `VectorIndex` are unchanged from the 2026-07-22 model
+(see that version) — but note the shared/category knowledgebase for MSA/LP is an
+**external system** (built separately), not part of this data model. The agent
+reaches it through a query tool, never through memory storage.
+
+---
+
+## Relationship map
 
 ```mermaid
 erDiagram
-    Agent ||--|| MemoryRoot : "owns (Zone A)"
+    Org ||--o{ Agent : "contains"
+    Org ||--o{ Project : "contains"
+    Org ||--o{ Human : "contains"
+    Human ||--o{ Agent : "owns"
+    Human }o--o{ Project : "works on"
+    Agent ||--|| MemoryRoot : "Zone A"
+    Project ||--|| MemoryRoot : "Zone B"
     MemoryRoot ||--o{ MemoryFile : "contains"
-    MemoryRoot ||--o{ GitRemote : "Zone A only (0:N)"
-    MemoryRoot ||--|| SyncPolicy : "governed by"
-    MemoryRoot ||--o{ ArchivalDocument : "may contain"
-    ArchivalDocument ||--|| VectorIndex : "derived from"
+    MemoryRoot ||--o| SyncConfig : "governed by"
     Session }o--|| Agent : "belongs to"
-    Session ||--o| MemoryRoot : "bound to (session root)"
+    Session ||--o| MemoryRoot : "bound to"
 ```
 
-## Impossible States
-
-These must never occur. The system should reject them at the boundary.
+## Impossible states
 
 | State | Why impossible | Enforcement |
 |-------|---------------|-------------|
-| Zone B MemoryRoot has a git remote | Project memory stays local | Git remote check on `/memory:init`. `memory_write` in Zone B never pushes. |
-| memory_write fails but git commit succeeds | Write and commit are atomic — both or neither | Transaction in `memory_write` tool |
-| Agent reads stale Zone A on session start | pull_on_start policy | `session_start` hook checks SyncPolicy |
-| Two devices push divergent memory simultaneously | Additive single-file writes don't conflict. Deletion is local-only. | Policy: Phase 2 deletions are local-only, not synced. |
-| Vector search returns results from deleted documents | Index is derived from current ArchivalDocuments | Rebuild index after document deletion |
-| Two agents share one Zone A MemoryRoot on same device | Each agent has its own directory | `/agent:init` creates separate `~/.pi/agents/<name>/` per agent |
-| Push blocks a memory_write | Push is best-effort, write commits locally first | `memory_write` always returns success on local commit. Push failure is logged, not returned. |
+| Zone B MemoryRoot has a public remote | Project memory never in a public repo | #24 allows private remote only |
+| `project.json` contains name or path | name/path are mutable + machine-local | identity file = `{ uuid }` only |
+| Registry keyed by name | rename would break the index | registry keyed by uuid |
+| Registry `path` syncs across devices | path is machine-local | #24 excludes `path` from sync |
+| Two dirs share a uuid, silently | copy must be recognized as a fork | `/startwork` prompts "mint fresh uuid" |
+| memory_write fails but commit succeeds | atomic — both or neither | transaction in `memory_write` |
+| Push blocks a memory_write | push is fire-and-forget | `memory_write` returns on local commit |
+| A push force-overwrites the server | rebase-only policy | never `--force`; conflict → human |
 
 ## What's NOT in this model (deferred)
 
-- **Multi-agent shared memory** — one agent per Zone A MemoryRoot. Zone B is shared by convention (multiple agents read/write `.memory/`). ACLs deferred.
-- **Cross-interface session merging** — TUI and Telegram sessions share Zone A but have independent conversation context. Merging sessions is deferred.
-- **Unified search results** — text search and semantic search are separate tools. Merged results deferred.
-- **Real-time sync** — websocket push notifications. Git polling is sufficient for Phase 2.
-- **MemoryFile version history via tools** — git history exists but is not exposed as `memory_read(path, version?)`. Accessible only via git CLI.
-- **Cross-device deletion** — files can be deleted locally but deletion is not synced. Prevents merge conflicts.
+- **Multi-agent shared memory** — one soul per MemoryRoot; Zone B shared by convention. ACLs deferred (#14).
+- **Human/customer records at scale** — the single-human case needs no uuid; the customer store is an external system.
+- **Cross-interface session merging**, **real-time sync**, **unified search**, **version history via tools** — unchanged from 2026-07-22.
+- **Cross-device deletion** — superseded: #8's rebase/conflict policy now governs divergence.

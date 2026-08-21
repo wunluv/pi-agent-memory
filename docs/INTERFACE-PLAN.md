@@ -3,6 +3,12 @@
 > **Gate 2 deliverable.** Interface contracts for Phase 2 features.
 > Built on the Gate 1 Data Model. Defines every new tool, command, and
 > interface modification before any implementation code is written.
+>
+> **Superseded (2026-08-20):** the sync interface below describes an earlier
+> design (`.sync-policy.json` per agent, `push_on_write` default false). #8 was
+> built differently — config at `~/.pi/memory-sync.json` (mode 600), `push_on_commit`
+> default true, single `server_url`. See SPEC_v4 §2.2 for the canonical sync spec.
+> The Agent Identity and Auto-Discover sections remain current.
 
 ---
 

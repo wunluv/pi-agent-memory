@@ -25,11 +25,29 @@ export interface IdentityEnv {
 	git: GitFn;
 }
 
+export interface ProjectRegistryEntry {
+	name: string;
+	path: string;
+	humans: string[]; // membership ACL — open when empty
+}
+
+export interface MemberRegistryEntry {
+	name: string;
+	status: "ephemeral" | "member";
+	memoryPath: string;
+}
+
+export interface HumanRegistryEntry {
+	name: string;
+	agents: string[]; // ownership binding — the agents serving this human
+}
+
 export interface OrgRegistry {
 	version: number;
 	updated: string;
-	projects: Record<string, unknown>;
-	members: Record<string, { name: string; uuid: string; status: "ephemeral" | "member"; memoryPath: string }>;
+	projects: Record<string, ProjectRegistryEntry>; // uuid → entry (v2)
+	members: Record<string, MemberRegistryEntry>;   // uuid → entry (v2)
+	humans: Record<string, HumanRegistryEntry>;     // uuid → entry (v2)
 }
 
 export interface IdentitySummary {
@@ -98,9 +116,9 @@ export function ensureOrgRoot(env: IdentityEnv, uuid: string | null): boolean {
 			fs.writeFileSync(path.join(env.orgRoot, "roles", ".gitkeep"), "");
 			fs.writeFileSync(
 				path.join(env.orgRoot, "README.md"),
-				`# Org Root\n\nShared org-layer memory at ~/.pi/org/. Single-writer convention: registry.json is an aggregate file touched only at gated transitions (recruitment, promotion, project moves).\n\n- \`registry.json\` — \`projects\` (name → path) + \`members\` (name → identity)\n- \`roles/\` — shared role specs, evolved by their wearers\n`,
+				`# Org Root\n\nShared org-layer memory at ~/.pi/org/. Single-writer convention: registry.json is an aggregate file touched only at gated transitions (recruitment, promotion, project moves).\n\n- \`registry.json\` — uuid-keyed \`projects\` + \`members\` + \`humans\`\n- \`roles/\` — shared role specs, evolved by their wearers\n`,
 			);
-			const skeleton: OrgRegistry = { version: 1, updated: new Date().toISOString().split("T")[0], projects: {}, members: {} };
+			const skeleton: OrgRegistry = { version: 2, updated: new Date().toISOString().split("T")[0], projects: {}, members: {}, humans: {} };
 			fs.writeFileSync(registry, JSON.stringify(skeleton, null, 2) + "\n", "utf-8");
 		}
 		if (!isGitRepo(env.orgRoot)) {
@@ -114,26 +132,84 @@ export function ensureOrgRoot(env: IdentityEnv, uuid: string | null): boolean {
 	}
 }
 
-/** Load the org registry; return a fresh skeleton when missing or corrupt. */
+/** Load the org registry, normalizing v1 (name-keyed) to v2 (uuid-keyed). Null-safe. */
 export function loadOrgRegistry(env: IdentityEnv): OrgRegistry {
 	const registry = path.join(env.orgRoot, "registry.json");
 	try {
 		if (fs.existsSync(registry)) {
 			const parsed = JSON.parse(fs.readFileSync(registry, "utf-8"));
-			if (parsed && typeof parsed === "object" && typeof parsed.members === "object" && parsed.members) {
-				return parsed as OrgRegistry;
+			if (parsed && typeof parsed === "object") {
+				return normalizeRegistry(parsed);
 			}
 		}
 	} catch {
 		// fall through to skeleton
 	}
-	return { version: 1, updated: new Date().toISOString().split("T")[0], projects: {}, members: {} };
+	return { version: 2, updated: new Date().toISOString().split("T")[0], projects: {}, members: {}, humans: {} };
+}
+
+/**
+ * Normalize a registry to v2 (uuid-keyed). Idempotent — v2 input round-trips,
+ * v1 (name-keyed) input is re-keyed. v1 `projects` carried no uuid, so those
+ * rows are dropped: legacy projects stay unidentifiable until #22 mints their
+ * uuid (#13 design decision 5).
+ */
+function normalizeRegistry(parsed: Record<string, unknown>): OrgRegistry {
+	const out: OrgRegistry = {
+		version: 2,
+		updated: typeof parsed.updated === "string" ? parsed.updated : new Date().toISOString().split("T")[0],
+		projects: {},
+		members: {},
+		humans: {},
+	};
+
+	if (parsed.members && typeof parsed.members === "object") {
+		for (const [key, raw] of Object.entries(parsed.members as Record<string, unknown>)) {
+			if (!raw || typeof raw !== "object") continue;
+			const val = raw as Record<string, unknown>;
+			// v1: key = name, value carries uuid → re-key by uuid.
+			// v2: key = uuid, value carries name only.
+			const uuid = typeof val.uuid === "string" && val.uuid ? val.uuid : key;
+			out.members[uuid] = {
+				name: typeof val.name === "string" ? val.name : key,
+				status: val.status === "member" ? "member" : "ephemeral",
+				memoryPath: typeof val.memoryPath === "string" ? val.memoryPath : "",
+			};
+		}
+	}
+
+	if (parsed.projects && typeof parsed.projects === "object") {
+		for (const [key, raw] of Object.entries(parsed.projects as Record<string, unknown>)) {
+			// v2: uuid-keyed object { name, path, humans }. v1: name-keyed string path (no uuid → dropped).
+			if (!raw || typeof raw !== "object") continue;
+			const val = raw as Record<string, unknown>;
+			out.projects[key] = {
+				name: typeof val.name === "string" ? val.name : key,
+				path: typeof val.path === "string" ? val.path : "",
+				humans: Array.isArray(val.humans) ? (val.humans as string[]) : [],
+			};
+		}
+	}
+
+	if (parsed.humans && typeof parsed.humans === "object") {
+		for (const [key, raw] of Object.entries(parsed.humans as Record<string, unknown>)) {
+			if (!raw || typeof raw !== "object") continue;
+			const val = raw as Record<string, unknown>;
+			out.humans[key] = {
+				name: typeof val.name === "string" ? val.name : key,
+				agents: Array.isArray(val.agents) ? (val.agents as string[]) : [],
+			};
+		}
+	}
+
+	return out;
 }
 
 /** Persist the registry and commit it in the org root repo. */
 export function saveOrgRegistry(env: IdentityEnv, reg: OrgRegistry, uuid: string | null): boolean {
 	const registry = path.join(env.orgRoot, "registry.json");
 	try {
+		reg.version = 2;
 		reg.updated = new Date().toISOString().split("T")[0];
 		fs.writeFileSync(registry, JSON.stringify(reg, null, 2) + "\n", "utf-8");
 		const staged = env.git(["status", "--porcelain"], env.orgRoot);
@@ -147,12 +223,77 @@ export function saveOrgRegistry(env: IdentityEnv, reg: OrgRegistry, uuid: string
 	}
 }
 
-/** Upsert a member row in the org registry (thin index — identity content stays in agent.json). */
+/** Upsert a member row in the org registry, keyed by uuid (rename-proof). Thin index — identity content stays in agent.json. */
 export function registerMember(env: IdentityEnv, name: string, uuid: string, status: "ephemeral" | "member"): boolean {
 	if (!ensureOrgRoot(env, uuid)) return false;
 	const reg = loadOrgRegistry(env);
-	reg.members[name] = { name, uuid, status, memoryPath: `~/.pi/agents/${name}/memory` };
+	reg.members[uuid] = { name, status, memoryPath: `~/.pi/agents/${name}/memory` };
 	return saveOrgRegistry(env, reg, uuid);
+}
+
+/** Upsert a project row, keyed by its immutable uuid. `actorUuid` authors the org-root commit. */
+export function registerProject(
+	env: IdentityEnv,
+	uuid: string,
+	name: string,
+	projectPath: string,
+	humans: string[] = [],
+	actorUuid: string | null = null,
+): boolean {
+	if (!ensureOrgRoot(env, actorUuid)) return false;
+	const reg = loadOrgRegistry(env);
+	reg.projects[uuid] = { name, path: projectPath, humans };
+	return saveOrgRegistry(env, reg, actorUuid);
+}
+
+/** Look up a project's registry entry by its uuid. Null if unknown. */
+export function lookupProject(env: IdentityEnv, uuid: string): ProjectRegistryEntry | null {
+	const reg = loadOrgRegistry(env);
+	const p = reg.projects[uuid];
+	return p && typeof p.path === "string" && p.path ? p : null;
+}
+
+/** Find a project's entry by mutable name (scan; name is a registry field, not a key). Null if unknown. */
+export function findProjectByName(env: IdentityEnv, name: string): { uuid: string; name: string; path: string } | null {
+	const reg = loadOrgRegistry(env);
+	for (const [uuid, p] of Object.entries(reg.projects)) {
+		if (p.name === name && p.path) return { uuid, name: p.name, path: p.path };
+	}
+	return null;
+}
+
+/** Find a member's uuid by name (name is a mutable registry field). Null if unknown. */
+export function findMemberUuid(env: IdentityEnv, name: string): string | null {
+	const reg = loadOrgRegistry(env);
+	for (const [uuid, m] of Object.entries(reg.members)) {
+		if (m.name === name) return uuid;
+	}
+	return null;
+}
+
+/** Read a project's immutable uuid from project.json in its .memory/ root. Null if absent (legacy). */
+export function readProjectUuid(memoryPath: string): string | null {
+	try {
+		const file = path.join(memoryPath, "project.json");
+		if (!fs.existsSync(file)) return null;
+		const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+		return typeof parsed.uuid === "string" && parsed.uuid ? parsed.uuid : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Read project.json's uuid, minting a fresh one when absent (bootstrap). Idempotent — never regenerates. */
+export function ensureProjectUuid(memoryPath: string): string {
+	const existing = readProjectUuid(memoryPath);
+	return existing ?? mintProjectUuid(memoryPath);
+}
+
+/** Force-mint a fresh uuid into project.json (fork action — a copy carried the old uuid). */
+export function mintProjectUuid(memoryPath: string): string {
+	const uuid = randomUUID();
+	fs.writeFileSync(path.join(memoryPath, "project.json"), JSON.stringify({ uuid }, null, 2) + "\n", "utf-8");
+	return uuid;
 }
 
 /** Strip Letta-era cruft (hooks, config, remotes) from an existing memory repo. Idempotent. */
