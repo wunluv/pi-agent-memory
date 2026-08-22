@@ -91,6 +91,15 @@ export interface SearchHit {
   matchedTerms: string[];
 }
 
+/** A searchable document independent of its storage backend. */
+export interface RankedTextDocument {
+  path: string;
+  body: string;
+  description?: string;
+  importance?: number;
+  updated?: string;
+}
+
 export interface RankedSearchOptions {
   topN?: number;           // default 10
   recencyHalfLife?: number; // days; default 180
@@ -119,40 +128,50 @@ export function rankedSearch(
   opts: RankedSearchOptions = {},
 ): SearchHit[] {
   const { collectMdFiles, parseFrontmatter } = deps;
+  const files = collectMdFiles(root);
+  if (files.length === 0) return [];
+
+  const docs = files.map((f): RankedTextDocument => {
+    const rel = path.relative(root, f);
+    const content = fs.readFileSync(f, "utf-8");
+    const fm = parseFrontmatter(content);
+    return { path: rel, body: fm.body, description: fm.description, importance: fm.importance, updated: fm.updated };
+  });
+  return rankedSearchDocuments(query, docs, opts);
+}
+
+/** Rank an arbitrary in-memory corpus with the same BM25 used by memory_search. */
+export function rankedSearchDocuments(
+  query: string,
+  documents: RankedTextDocument[],
+  opts: RankedSearchOptions = {},
+): SearchHit[] {
   const topN = opts.topN ?? 10;
   const recencyHalfLife = opts.recencyHalfLife ?? 180;
   const fuzzy = opts.fuzzy ?? false;
   const fuzzyMaxDist = opts.fuzzyMaxDist ?? 2;
+  if (documents.length === 0) return [];
 
-  const files = collectMdFiles(root);
-  if (files.length === 0) return [];
-
-  const docs = files.map((f) => {
-    const rel = path.relative(root, f);
-    const content = fs.readFileSync(f, "utf-8");
-    const fm = parseFrontmatter(content);
-    // Structure (directory path) is for browsing, not search — a folder name is
-    // a known, not relevance evidence. Rank on content: body + curated
-    // description + filename (a semi-semantic title). No directory-path terms.
-    const filename = path.basename(rel).replace(/\.md$/, "");
+  const docs = documents.map((document) => {
+    // Structure (directory path) is for browsing, not search. Rank on content,
+    // description, and filename as a semi-semantic title.
+    const filename = path.basename(document.path).replace(/\.md$/, "");
     const tokens = [
-      ...tokenize(fm.body),
-      ...tokenize(fm.description),
+      ...tokenize(document.body),
+      ...tokenize(document.description ?? ""),
       ...tokenize(filename),
     ].map(stem);
     return {
-      rel,
-      body: fm.body,
+      path: document.path,
+      body: document.body,
       tokens,
-      importance: fm.importance,
-      updated: fm.updated,
+      importance: document.importance ?? 3,
+      updated: document.updated ?? "",
     };
   });
 
   const N = docs.length;
   const avgdl = docs.reduce((s, d) => s + d.tokens.length, 0) / N;
-
-  // Document frequency per stemmed term (for IDF).
   const df = new Map<string, number>();
   for (const d of docs) {
     for (const t of new Set(d.tokens)) df.set(t, (df.get(t) ?? 0) + 1);
@@ -164,16 +183,13 @@ export function rankedSearch(
     return Math.log(1 + (N - n + 0.5) / (n + 0.5));
   };
 
-  // Query terms. Fuzzy expansion applies ONLY to terms absent from the corpus
-  // vocabulary (likely typos) — never to terms that already match. This keeps
-  // fuzzy from polluting well-matched queries (e.g. "BTTN").
+  // Fuzzy expansion applies only to query terms absent from the vocabulary.
   let qTerms = [...new Set(tokenize(query).map(stem))];
   if (fuzzy && qTerms.length > 0) {
     const vocab = [...df.keys()];
     const expansions: string[] = [];
     for (const qt of qTerms) {
-      if (df.get(qt)) continue; // term exists in corpus — no fuzz needed
-      if (qt.length < 4) continue; // short terms are too noisy to fuzz
+      if (df.get(qt) || qt.length < 4) continue;
       for (const v of vocab) {
         if (v.length >= 4 && Math.abs(v.length - qt.length) <= fuzzyMaxDist && levenshtein(qt, v) <= fuzzyMaxDist) {
           expansions.push(v);
@@ -185,14 +201,12 @@ export function rankedSearch(
   }
 
   const results: SearchHit[] = [];
-
   for (const d of docs) {
     const tf = new Map<string, number>();
     for (const t of d.tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
 
     let score = 0;
     const matchedTerms: string[] = [];
-
     for (const qt of qTerms) {
       const f = tf.get(qt) ?? 0;
       if (f === 0) continue;
@@ -202,16 +216,13 @@ export function rankedSearch(
       score += idfVal * tfNorm;
       matchedTerms.push(qt);
     }
-
     if (score === 0) continue;
 
-    // Metadata boosts: importance 1–5 → 0.7..1.3 ; recency halves over half-life.
     const importanceBoost = 1 + (d.importance - 3) * 0.15;
     const recencyBoost = Math.pow(0.5, daysSince(d.updated) / recencyHalfLife);
-    score *= importanceBoost * (0.5 + recencyBoost); // floor so old docs aren't zeroed
-
+    score *= importanceBoost * (0.5 + recencyBoost);
     results.push({
-      path: d.rel,
+      path: d.path,
       score,
       importance: d.importance,
       updated: d.updated,

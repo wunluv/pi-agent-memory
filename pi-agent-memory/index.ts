@@ -16,6 +16,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as cp from "node:child_process";
 import { rankedSearch } from "./ranked-search";
+import { searchSessionMessages } from "./session-search";
 import { extractWikiLinks, findBacklinks } from "./backlinks";
 import {
 	budgetSystemInjection,
@@ -443,70 +444,13 @@ function setActiveAgent(name: string): void {
 	agentUuid = loadAgentIdentity(identityEnv, name);
 }
 
-/** Search session history */
+/** Search session history with the shared BM25 corpus scorer. */
 function searchSessions(query: string): string {
 	if (!fs.existsSync(SESSIONS_DIR)) return "No session history found.";
-
-	const results: Array<{ session: string; excerpt: string }> = [];
-	const queryLower = query.toLowerCase();
-
-	for (const projDir of fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })) {
-		if (!projDir.isDirectory()) continue;
-		const projPath = path.join(SESSIONS_DIR, projDir.name);
-
-		for (const file of fs.readdirSync(projPath)) {
-			if (!file.endsWith(".jsonl")) continue;
-			const filePath = path.join(projPath, file);
-			try {
-				const content = fs.readFileSync(filePath, "utf-8");
-				const lines = content.split("\n").filter(Boolean);
-				for (const line of lines) {
-					try {
-						const entry = JSON.parse(line);
-						if (entry.type !== "message" || !entry.message?.content) continue;
-
-						const textParts: string[] = [];
-						const contentArr = Array.isArray(entry.message.content)
-							? entry.message.content
-							: typeof entry.message.content === "string"
-								? [{ type: "text", text: entry.message.content }]
-								: [];
-
-						for (const block of contentArr) {
-							if (block.type === "text" && typeof block.text === "string") {
-								textParts.push(block.text);
-							}
-						}
-
-						const fullText = textParts.join(" ");
-						if (fullText.toLowerCase().includes(queryLower)) {
-							const excerpt = fullText.length > 200 ? fullText.slice(0, 200) + "..." : fullText;
-							const sessionId = file.replace(/\.jsonl$/, "").slice(-20);
-							results.push({
-								session: `${projDir.name} / ${sessionId}`,
-								excerpt: excerpt.trim(),
-							});
-							if (results.length >= 20) break;
-						}
-					} catch {
-						// skip unparseable lines
-					}
-				}
-			} catch {
-				// skip unreadable files
-			}
-			if (results.length >= 20) break;
-		}
-		if (results.length >= 20) break;
-	}
-
-	if (results.length === 0) return "No matching sessions found.";
-
-	return results
-		.map(
-			(r, i) =>
-				`${i + 1}. [${r.session}]\n   "${r.excerpt}"`,
-		)
+	const hits = searchSessionMessages(query, SESSIONS_DIR, { topN: 20 });
+	if (hits.length === 0) return "No matching sessions found.";
+	return hits
+		.map((hit, i) => `${i + 1}. [${hit.path}]\n   "${hit.snippet}"`)
 		.join("\n\n");
 }
 
