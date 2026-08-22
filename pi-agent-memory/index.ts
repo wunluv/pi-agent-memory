@@ -42,12 +42,16 @@ import {
 } from "./identity";
 import {
 	agentRepoUrl,
+	projectRepoUrl,
+	orgRepoUrl,
+	isPrivateMemoryRemote,
 	isSyncEnabled,
 	loadSyncConfig,
 	localRemotePath,
 	parseSshRemote,
 	provisionRemote,
 	pullOnce,
+	syncPrivateOnce,
 	pushAsync,
 	saveSyncConfig,
 	syncOnce,
@@ -382,23 +386,113 @@ function gitCommit(filePath: string, message: string, root: string): boolean {
 	if (add.code !== 0) return false;
 	const commit = git(["commit", "-m", message], root);
 	if (commit.code === 0) {
-		maybeSyncAfterZoneACommit(root);
+		maybeSyncAfterCommit(root);
 		return true;
 	}
 	return false;
 }
 
-/**
- * Repo-role guard (#8 frozen scope): after a Zone A commit, fire an async
- * push — but ONLY for the active agent's own Zone A repo. Zone B and the org
- * root are never pushed by #8 (their policy lives in #24).
- */
+/** Push the active agent's Zone A repo after a successful commit (#8). */
 function maybeSyncAfterZoneACommit(root: string): void {
-	if (!activeAgent || !agentUuid) return;
-	if (root !== getAgentMemoryRoot()) return;
+	if (!activeAgent || !agentUuid || root !== getAgentMemoryRoot()) return;
 	const config = loadSyncConfig(syncEnv);
 	if (!isSyncEnabled(config) || !config.push_on_commit) return;
 	pushAsync(syncEnv, root, agentRepoUrl(config.server_url, agentUuid));
+}
+
+/** Resolve the server-side name for a Zone B soul without trusting its path. */
+function projectNameForMemoryRoot(root: string): string | null {
+	const uuid = readProjectUuid(root);
+	if (uuid) {
+		const registered = lookupProject(identityEnv, uuid);
+		if (registered?.name) return registered.name;
+	}
+	return path.basename(path.dirname(root)) || null;
+}
+
+/** Push a Zone B project soul to its derived private remote after a commit. */
+function maybeSyncAfterZoneBCommit(root: string): void {
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config) || !config.push_on_commit) return;
+	const projectName = projectNameForMemoryRoot(root);
+	if (!projectName) return;
+	let remote: string;
+	try {
+		remote = projectRepoUrl(config.server_url, projectName);
+		if (!isPrivateMemoryRemote(config.server_url, remote)) return;
+	} catch {
+		return;
+	}
+	provisionRemote(syncEnv, remote);
+	pushAsync(syncEnv, root, remote);
+}
+
+/** Push the shared org root after a gated registry/role write. */
+function syncOrgAfterWrite(): void {
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config) || !config.push_on_commit || !isGitRepo(ORG_ROOT)) return;
+	const remote = orgRepoUrl(config.server_url);
+	if (!isPrivateMemoryRemote(config.server_url, remote)) return;
+	provisionRemote(syncEnv, remote);
+	pushAsync(syncEnv, ORG_ROOT, remote);
+}
+
+/** Dispatch post-commit sync by memory-root role. */
+function maybeSyncAfterCommit(root: string): void {
+	if (root === getAgentMemoryRoot()) {
+		maybeSyncAfterZoneACommit(root);
+	} else if (path.resolve(root) === path.resolve(ORG_ROOT)) {
+		syncOrgAfterWrite();
+	} else if (readProjectUuid(root)) {
+		maybeSyncAfterZoneBCommit(root);
+	}
+}
+
+/** Pull the shared org layer at session start. */
+function syncOrgOnStart(): void {
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config) || !config.pull_on_start || !isGitRepo(ORG_ROOT)) return;
+	const remote = orgRepoUrl(config.server_url);
+	if (!isPrivateMemoryRemote(config.server_url, remote)) return;
+	syncPrivateOnce(syncEnv, ORG_ROOT, config.server_url, remote, 2500, { push: false });
+}
+
+/** Manually sync whichever memory root is active in this session. */
+function syncMemoryRoot(root: string): ReturnType<typeof syncOnce> | null {
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config)) return null;
+	if (root === getAgentMemoryRoot()) {
+		if (!agentUuid) return null;
+		return syncOnce(syncEnv, root, agentRepoUrl(config.server_url, agentUuid), 60000);
+	}
+	if (path.resolve(root) === path.resolve(ORG_ROOT)) {
+		const remote = orgRepoUrl(config.server_url);
+		if (!isPrivateMemoryRemote(config.server_url, remote)) return null;
+		provisionRemote(syncEnv, remote);
+		return syncPrivateOnce(syncEnv, root, config.server_url, remote, 60000);
+	}
+	const projectName = projectNameForMemoryRoot(root);
+	if (!projectName) return null;
+	const remote = projectRepoUrl(config.server_url, projectName);
+	if (!isPrivateMemoryRemote(config.server_url, remote)) return null;
+	provisionRemote(syncEnv, remote);
+	return syncPrivateOnce(syncEnv, root, config.server_url, remote, 60000);
+}
+
+/** Pull a project soul at session start. Push begins after a local commit. */
+function syncProjectOnStart(root: string): void {
+	const config = loadSyncConfig(syncEnv);
+	if (!isSyncEnabled(config) || !config.pull_on_start) return;
+	const projectName = projectNameForMemoryRoot(root);
+	if (!projectName) return;
+	try {
+		const remote = projectRepoUrl(config.server_url, projectName);
+		if (isPrivateMemoryRemote(config.server_url, remote)) {
+			syncPrivateOnce(syncEnv, root, config.server_url, remote, 2500, { push: false });
+		}
+	} catch {
+		// Invalid project names or unavailable remotes never block project work.
+	}
 }
 
 /**
@@ -1178,6 +1272,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			agentUuid = result.uuid;
 			saveActiveAgent(name);
 			syncAgentAfterIdentity(name, result.uuid);
+			syncOrgAfterWrite();
 
 			ctx.ui.notify(
 				`\u2705 Agent "${name}" ready. UUID: ${result.uuid}${result.kept ? " (kept)" : ""}\n` +
@@ -1220,6 +1315,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					git(["add", "agent.json"], path.join(AGENTS_DIR, name, "memory"));
 					git(["commit", "-m", `identity: promote ${name} to member`], path.join(AGENTS_DIR, name, "memory"));
 					maybeSyncAfterZoneACommit(path.join(AGENTS_DIR, name, "memory"));
+					syncOrgAfterWrite();
 				} catch {
 					// registry flip stands even if agent.json is unreadable
 				}
@@ -1265,20 +1361,18 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 	});
 
 	pi.registerCommand("agent:sync", {
-		description: "Manually sync the active agent's Zone A memory (pull --rebase then push). Usage: /agent:sync",
+		description: "Manually sync the active memory root (pull --rebase then push). Usage: /agent:sync",
 		handler: async (_args, ctx) => {
-			if (!activeAgent || !agentUuid) {
-				ctx.ui.notify("No active agent. Use /agent:switch or /agent:init first.", "warning");
+			const root = sessionMemoryRoot || getAgentMemoryRoot();
+			if (!root) {
+				ctx.ui.notify("No active memory root. Use /startwork or /agent:switch first.", "warning");
 				return;
 			}
-			const config = loadSyncConfig(syncEnv);
-			if (!isSyncEnabled(config)) {
-				ctx.ui.notify("Sync is off — no server_url set. Use /memory:sync-config server_url=<url>.", "info");
+			const res = syncMemoryRoot(root);
+			if (!res) {
+				ctx.ui.notify("Sync is off or this memory root has no valid private identity.", "info");
 				return;
 			}
-			const root = getAgentMemoryRoot()!;
-			const remote = agentRepoUrl(config.server_url, agentUuid);
-			const res = syncOnce(syncEnv, root, remote, 60000);
 			if (res.conflict) {
 				ctx.ui.notify("Conflict: local and remote diverge. Both kept intact; resolve manually (gated write).", "warning");
 			} else if (res.ok) {
@@ -1377,6 +1471,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			// git config does not clone — re-apply author identity (#8)
 			configureRepoAuthor(identityEnv, dest, pulledUuid);
 			registerMember(identityEnv, name, pulledUuid, "ephemeral");
+			syncOrgAfterWrite();
 			ctx.ui.notify(`\u2705 Pulled agent "${name}" (${pulledUuid}) into ~/.pi/agents/${name}/memory`, "success");
 		},
 	});
@@ -1573,8 +1668,9 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			const memoryPath = path.join(resolvedPath, ".memory");
 
-			const begin = (root: string) => {
+			const begin = async (root: string) => {
 				sessionMemoryRoot = root;
+				syncProjectOnStart(root);
 				const tree = buildTreeView("reference", root);
 				ctx.ui.notify(
 					`\u2705 Session root set: ${root}\n\n${tree}\n\nWhat are we working on today?`,
@@ -1595,6 +1691,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 						);
 						if (choice === "update") {
 							registerProject(identityEnv, uuid, registered.name, resolvedPath, registered.humans, agentUuid);
+							syncOrgAfterWrite();
 							updateProjectsMdPath(registered.name, registered.path, resolvedPath);
 						} else if (choice === "mint a fresh uuid") {
 							// fork — give this copy its own soul, never silently merge
@@ -1602,16 +1699,18 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 							git(["add", "project.json"], memoryPath);
 							git(["commit", "-m", "identity: mint fresh project uuid (fork)"], memoryPath);
 							registerProject(identityEnv, fresh, path.basename(resolvedPath), resolvedPath, [], agentUuid);
+							syncOrgAfterWrite();
 						}
 						// "cancel" → no registry write; proceed with the session
 					} else if (!registered) {
 						// project.json exists but the uuid is unknown to the registry → register it
 						registerProject(identityEnv, uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
+						syncOrgAfterWrite();
 					}
 					// registered && same path → already reconciled, no-op
 				}
 				// uuid null (legacy, no project.json) → proceed, no registry write (#22 mints it)
-				begin(memoryPath);
+				await begin(memoryPath);
 				return;
 			}
 
@@ -1620,7 +1719,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				const entry = findProjectEntry(input);
 				if (entry) {
 					if (fs.existsSync(path.join(entry.path, ".memory"))) {
-						begin(path.join(entry.path, ".memory"));
+						await begin(path.join(entry.path, ".memory"));
 						return;
 					}
 					ctx.ui.notify(
@@ -1649,7 +1748,9 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					return;
 				}
 				registerProject(identityEnv, result.uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
-				begin(result.memoryPath);
+				syncOrgAfterWrite();
+				maybeSyncAfterZoneBCommit(result.memoryPath);
+				await begin(result.memoryPath);
 			} else {
 				ctx.ui.notify("No session started.", "info");
 			}
@@ -1674,6 +1775,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					git(["add", "-A"], sessionMemoryRoot);
 					const commit = git(["commit", "-m", `endwork: Session consolidation ${now}`], sessionMemoryRoot);
 					if (commit.code === 0) {
+						maybeSyncAfterCommit(sessionMemoryRoot);
 						const head = git(["rev-parse", "--short", "HEAD"], sessionMemoryRoot);
 						const files = changed.split("\n").filter(Boolean).length;
 						commitInfo = `   Committed ${head.stdout.trim()} (${files} file${files === 1 ? "" : "s"}).\n`;
@@ -1803,6 +1905,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		activeAgent = loadActiveAgent();
 		agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
+		syncOrgOnStart();
 
 		// Auto-backfill: a legacy agent (no identity yet) gets cleaned and
 		// identified on load. Idempotent, one-time per agent; covers pi restart
@@ -1812,6 +1915,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			if (result) {
 				agentUuid = result.uuid;
 				syncAgentAfterIdentity(activeAgent, result.uuid);
+				syncOrgAfterWrite();
 				ctx.ui.notify(
 					`\u2705 Backfilled "${activeAgent}" on load: identity created, Letta cruft stripped, memory committed.\n` +
 					`   UUID: ${result.uuid}${result.caughtUp ? " | catch-up commit landed" : ""}`,
