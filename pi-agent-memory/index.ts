@@ -56,6 +56,7 @@ import {
 } from "./sync";
 import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile } from "./paths";
 import { ensureMemoryIgnored } from "./gitignore";
+import { findNearestMemoryRoot } from "./discovery";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,9 @@ const SYNC_LOG_PATH = path.join(os.homedir(), ".pi", "agent", "memory-repository
 let activeAgent: string | null = null;
 let agentUuid: string | null = null;
 let sessionMemoryRoot: string | null = null;
+// Undefined means discovery has not run for this session. Once resolved, the
+// value remains stable, including when it is null (no project memory found).
+let autoDiscoveredRoot: string | null | undefined;
 
 // ─── Prompt Loading ───────────────────────────────────────────────────────────────
 
@@ -111,7 +115,7 @@ function getAgentMemoryRoot(): string | null {
 	return path.join(AGENTS_DIR, activeAgent, "memory");
 }
 
-/** Resolve which memory root to use. Session root takes priority, then agent root. */
+/** Resolve which memory root to use. Explicit → session → auto-discovered → agent. */
 function resolveMemoryRoot(rootOverride?: string): string | null {
 	if (rootOverride) {
 		// Expand ~ to home directory so agents can use ~/DEV/... in root params
@@ -119,7 +123,10 @@ function resolveMemoryRoot(rootOverride?: string): string | null {
 		return expanded;
 	}
 	if (sessionMemoryRoot) return sessionMemoryRoot;
-	return getAgentMemoryRoot();
+	if (autoDiscoveredRoot === undefined) {
+		autoDiscoveredRoot = findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
+	}
+	return autoDiscoveredRoot || getAgentMemoryRoot();
 }
 
 function getSystemDir(): string | null {
@@ -587,7 +594,7 @@ function projectedSystemEvictions(targetRelPath: string, content: string): strin
  * Session (Zone B) and positive override writes are not the live context spine.
  */
 function isAgentZoneASystemWrite(paramsPath: string, rootOverride?: string, sessionRoot?: string): boolean {
-	if (rootOverride || sessionRoot) return false;
+	if (rootOverride || sessionRoot || autoDiscoveredRoot) return false;
 	return paramsPath.startsWith("system/");
 }
 
@@ -785,7 +792,13 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			const tree = buildTreeView(params.path || "", root);
-			const zone = sessionMemoryRoot && !params.root ? "Zone B (session)" : params.root ? "Zone B (override)" : "Zone A (agent)";
+			const zone = sessionMemoryRoot && !params.root
+				? "Zone B (session)"
+				: params.root
+					? "Zone B (override)"
+					: autoDiscoveredRoot
+						? "Zone B (auto-discovered)"
+						: "Zone A (agent)";
 			return {
 				content: [{ type: "text", text: tree }],
 				details: { zone, path: params.path || "/" },
@@ -1561,8 +1574,25 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		handler: async (args, ctx) => {
 			const input = args.trim();
 
+			const begin = (root: string) => {
+				sessionMemoryRoot = root;
+				const tree = buildTreeView("reference", root);
+				ctx.ui.notify(
+					`\u2705 Session root set: ${root}\n\n${tree}\n\nWhat are we working on today?`,
+					"success",
+				);
+			};
+
+			// With auto-discovery, /startwork becomes a ritual: acknowledge the
+			// already discovered project and show its eagle-eye tree.
 			if (!input) {
-				ctx.ui.notify("Usage: /startwork <project-name> or /startwork <path-to-project>", "warning");
+				const discovered = autoDiscoveredRoot ?? findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
+				autoDiscoveredRoot = discovered;
+				if (discovered) {
+					begin(discovered);
+					return;
+				}
+				ctx.ui.notify("No project .memory/ found from the current directory. Usage: /startwork <project-name> or /startwork <path-to-project>", "warning");
 				return;
 			}
 
@@ -1572,15 +1602,6 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				: path.resolve(input);
 
 			const memoryPath = path.join(resolvedPath, ".memory");
-
-			const begin = (root: string) => {
-				sessionMemoryRoot = root;
-				const tree = buildTreeView("reference", root);
-				ctx.ui.notify(
-					`\u2705 Session root set: ${root}\n\n${tree}\n\nWhat are we working on today?`,
-					"success",
-				);
-			};
 
 			// Case A: .memory/ exists → reconcile by project.json uuid (no heuristic)
 			if (fs.existsSync(memoryPath)) {
@@ -1803,6 +1824,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		activeAgent = loadActiveAgent();
 		agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
+		autoDiscoveredRoot = findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 
 		// Auto-backfill: a legacy agent (no identity yet) gets cleaned and
 		// identified on load. Idempotent, one-time per agent; covers pi restart
