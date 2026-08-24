@@ -64,15 +64,15 @@ pi-agent-memory/
       mem_system_prompt.md  Archived Letta-era protocol; canonical is prompts/system.md
   README.md             Quick start, architecture overview
   VMA.md                Vision, Mission, Aims — Phase 1 done, Phase 2 backlog
-  SPEC_v4.md            Full design spec: three zones, progressive disclosure, acceptance criteria
-  SPEC_v3.md            Previous spec version (reference)
 
 SPEC_v4.md              Canonical spec at repo root
 AGENTS.md               This file
 docs/                   Design + planning (Gate 1/2 deliverables)
   DATA-MODEL.md         Entities, relationships, invariants (revised 2026-08-20)
-  INTERFACE-PLAN.md     Interface contracts (Gate 2)
+  TECHNICAL.md          Implementation-accurate engineer reference (2026-08-24)
+  EXPLAINED.md          Plain-language guide: zones, entities, session flow
   WBS.md                Work breakdown structure
+archive/                Stale/superseded docs (gitignored, local only; history in git)
 .memory/                Project memory (local git, no remote)
   reference/
     status.md           Operational logbook

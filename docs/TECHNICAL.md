@@ -2,8 +2,9 @@
 
 Implementation-accurate reference for engineers. Describes the system as built
 (2026-08), not as designed. Design intent lives in `SPEC_v4.md`; entity
-relationships in `docs/DATA-MODEL.md`; interface contracts in
-`docs/INTERFACE-PLAN.md` (partially superseded, see its header).
+relationships in `docs/DATA-MODEL.md`. The Gate 2 interface plan
+(`docs/INTERFACE-PLAN.md`) is archived — this document supersedes it as the
+interface reference; history in git.
 
 ## 1. What this is
 

@@ -3,7 +3,7 @@
 > Gate 1 deliverable, **revised 2026-08-20** to reflect the Phase 2 decisions
 > (identity/name/path split, Project/Human/Org entities, uuid-keyed registry,
 > #8 sync engine). Supersedes the 2026-07-22 version; that revision's critique
-> lives in [data-model-review.md](data-model-review.md).
+> is archived (git history — `archive/docs/data-model-review.md` is a local copy).
 
 ## The core distinction: Identity vs Name vs Path
 

@@ -94,7 +94,7 @@ updated: 2026-04-22
 
 ## Design
 
-See [SPEC_v4.md](SPEC_v4.md) for the full design document — token budget, progressive disclosure protocol, session workflow, acceptance criteria.
+See [SPEC_v4.md](../SPEC_v4.md) for the full design document — token budget, progressive disclosure protocol, session workflow, acceptance criteria.
 
 ## License
 
