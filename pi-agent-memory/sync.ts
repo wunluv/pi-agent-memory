@@ -96,6 +96,30 @@ export function agentRepoUrl(serverUrl: string, uuid: string): string {
 	return `${base}/${uuid}.git`;
 }
 
+/** Per-project private memory repo. Names are path-safe and human-readable. */
+export function projectRepoUrl(serverUrl: string, projectName: string): string {
+	const safeName = projectName.trim().replace(/[^a-zA-Z0-9._-]+/g, "-");
+	if (!safeName) throw new Error("A project name is required for Zone B sync.");
+	return `${serverUrl.replace(/\/+$/, "")}/${safeName}.git`;
+}
+
+/** Shared private org-layer repo. */
+export function orgRepoUrl(serverUrl: string): string {
+	return `${serverUrl.replace(/\/+$/, "")}/org.git`;
+}
+
+/** Guard for Zone B/org callers: only remotes derived from server_url are valid. */
+export function isPrivateMemoryRemote(serverUrl: string, remoteUrl: string): boolean {
+	const base = serverUrl.trim().replace(/\/+$/, "");
+	return !!base && remoteUrl.startsWith(`${base}/`) && remoteUrl.endsWith(".git");
+}
+
+export function assertPrivateMemoryRemote(serverUrl: string, remoteUrl: string): void {
+	if (!isPrivateMemoryRemote(serverUrl, remoteUrl)) {
+		throw new Error("Zone B and org memory may sync only to a remote derived from server_url.");
+	}
+}
+
 /** Local filesystem path for file:// or plain-path remotes; null otherwise. */
 export function localRemotePath(url: string): string | null {
 	if (url.startsWith("file://")) return url.slice("file://".length);
@@ -221,6 +245,19 @@ export function syncOnce(
 /** Pull-only variant (session_start auto-pull). 2–3s fail-fast via timeoutMs. */
 export function pullOnce(env: SyncEnv, repoPath: string, remoteUrl: string, timeoutMs: number): SyncResult {
 	return syncOnce(env, repoPath, remoteUrl, timeoutMs, { push: false });
+}
+
+/** Pull/push a private Zone B or org repo after validating its derived remote. */
+export function syncPrivateOnce(
+	env: SyncEnv,
+	repoPath: string,
+	serverUrl: string,
+	remoteUrl: string,
+	timeoutMs: number,
+	opts: { push?: boolean } = {},
+): SyncResult {
+	assertPrivateMemoryRemote(serverUrl, remoteUrl);
+	return syncOnce(env, repoPath, remoteUrl, timeoutMs, opts);
 }
 
 // ─── Async push (fire-and-forget) ───────────────────────────────────────────────

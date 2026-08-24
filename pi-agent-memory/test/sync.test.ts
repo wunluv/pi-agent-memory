@@ -12,6 +12,10 @@ import * as cp from "node:child_process";
 import {
 	DEFAULT_SYNC_CONFIG,
 	agentRepoUrl,
+	projectRepoUrl,
+	orgRepoUrl,
+	isPrivateMemoryRemote,
+	assertPrivateMemoryRemote,
 	isSyncEnabled,
 	loadSyncConfig,
 	localRemotePath,
@@ -57,6 +61,20 @@ function commit(cwd: string, file: string, content: string, message: string): vo
 	fs.writeFileSync(path.join(cwd, file), content);
 	git(["add", "-A"], cwd);
 	git(["commit", "-m", message], cwd);
+}
+
+// ─── Derived private remotes ─────────────────────────────────────────────────────
+
+{
+	const server = "ssh://memory.example/private/pi";
+	assert.equal(agentRepoUrl(server, "agent-uuid"), `${server}/agent-uuid.git`);
+	assert.equal(projectRepoUrl(server, "Heaven Search"), `${server}/Heaven-Search.git`);
+	assert.equal(orgRepoUrl(server), `${server}/org.git`);
+	assert.equal(isPrivateMemoryRemote(server, `${server}/project.git`), true);
+	assert.equal(isPrivateMemoryRemote(server, "https://github.com/public/project.git"), false);
+	assert.doesNotThrow(() => assertPrivateMemoryRemote(server, `${server}/org.git`));
+	assert.throws(() => assertPrivateMemoryRemote(server, "https://github.com/public/project.git"), /only to a remote derived/);
+	assert.throws(() => projectRepoUrl(server, "   "), /project name is required/);
 }
 
 // ─── Config ──────────────────────────────────────────────────────────────────────

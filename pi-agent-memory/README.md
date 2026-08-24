@@ -6,7 +6,7 @@ A lightweight three-zone memory system for pi agents. Git-backed markdown with p
 
 ```
 Zone A (Agent)     ~/.pi/agents/<agent>/memory/     Always in context (system/ files)
-Zone B (Project)   <project>/.memory/               Session-scoped via /startwork
+Zone B (Project)   <project>/.memory/               Session-scoped via /startwork; private sync only
 Zone C (Sessions)  .pi/sessions/                    Pi-managed, accessed via memory_recall
 ```
 
@@ -37,7 +37,7 @@ Zone C (Sessions)  .pi/sessions/                    Pi-managed, accessed via mem
 | `/memory:search <query>` | Full-text search |
 | `/memory:recall <query>` | Search session history |
 | `/remember` | Consolidate session into global memory |
-| `/agent:sync` | Manually sync Zone A memory (pull then push) |
+| `/agent:sync` | Manually sync active memory (Zone A, Zone B, or org root) |
 | `/agent:pull <uuid>` | Pull an agent's memory from the sync server |
 | `/memory:sync-config` | View or set sync config |
 
