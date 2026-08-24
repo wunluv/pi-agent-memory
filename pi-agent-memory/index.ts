@@ -805,6 +805,64 @@ function updateProjectsMdPath(name: string, oldPath: string, newPath: string): v
 	}
 }
 
+/**
+ * #46: reconcile a .memory/ root before a work session starts so it becomes a
+ * registered, syncable soul. Mints project.json for legacy roots (no uuid),
+ * adopts unknown uuids into the registry, and preserves the move/fork dialog
+ * for uuid-present mismatches. Idempotent for registered souls at their own
+ * path — no duplicate rows, no path clobber. Notifies when it registers.
+ */
+async function reconcileProjectRegistration(memoryPath: string, ctx: ExtensionContext): Promise<void> {
+	const projectPath = path.dirname(memoryPath);
+	const uuid = readProjectUuid(memoryPath);
+
+	if (uuid) {
+		const registered = lookupProject(identityEnv, uuid);
+		if (registered && registered.path !== projectPath) {
+			// Same soul at a different path: a move OR a fork (cp -r carries the uuid).
+			const choice = await ctx.ui.select(
+				`"${registered.name}" is registered at ${registered.path}, but its project.json lives here (${projectPath}).`,
+				["update", "cancel", "mint a fresh uuid"],
+			);
+			if (choice === "update") {
+				registerProject(identityEnv, uuid, registered.name, projectPath, registered.humans, agentUuid);
+				syncOrgAfterWrite();
+				updateProjectsMdPath(registered.name, registered.path, projectPath);
+			} else if (choice === "mint a fresh uuid") {
+				// fork — give this copy its own soul, never silently merge
+				const fresh = mintProjectUuid(memoryPath);
+				git(["add", "project.json"], memoryPath);
+				git(["commit", "-m", "identity: mint fresh project uuid (fork)"], memoryPath);
+				registerProject(identityEnv, fresh, path.basename(projectPath), projectPath, [], agentUuid);
+				syncOrgAfterWrite();
+			}
+			// "cancel" → no registry write; proceed with the session
+			return;
+		}
+		if (!registered) {
+			// project.json exists but the uuid is unknown to the registry → adopt it
+			registerProject(identityEnv, uuid, path.basename(projectPath), projectPath, [], agentUuid);
+			syncOrgAfterWrite();
+			maybeSyncAfterZoneBCommit(memoryPath);
+			ctx.ui.notify(`\u2705 Adopted "${path.basename(projectPath)}" into the org registry (unknown uuid).`, "success");
+		}
+		// registered && same path → already reconciled, no-op
+		return;
+	}
+
+	// Legacy root: no project.json → mint a fresh soul so writes stop silently
+	// staying local and start syncing to the derived private remote.
+	const fresh = mintProjectUuid(memoryPath);
+	if (isGitRepo(memoryPath)) {
+		git(["add", "project.json"], memoryPath);
+		git(["commit", "-m", "identity: mint project uuid (startwork)"], memoryPath);
+	}
+	registerProject(identityEnv, fresh, path.basename(projectPath), projectPath, [], agentUuid);
+	syncOrgAfterWrite();
+	maybeSyncAfterZoneBCommit(memoryPath);
+	ctx.ui.notify(`\u2705 Registered "${path.basename(projectPath)}" as a project (uuid minted, org registry updated).`, "success");
+}
+
 // ─── Extension Entry Point ────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -1643,6 +1701,8 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				const discovered = autoDiscoveredRoot ?? findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 				autoDiscoveredRoot = discovered;
 				if (discovered) {
+					// #46: a discovered root is an implicit "this is a project" — mint + register
+					await reconcileProjectRegistration(discovered, ctx);
 					begin(discovered);
 					return;
 				}
@@ -1659,36 +1719,9 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			// Case A: .memory/ exists → reconcile by project.json uuid (no heuristic)
 			if (fs.existsSync(memoryPath)) {
-				const uuid = readProjectUuid(memoryPath);
-				if (uuid) {
-					const registered = lookupProject(identityEnv, uuid);
-					if (registered && registered.path !== resolvedPath) {
-						// Same soul at a different path: a move OR a fork (cp -r carries the uuid).
-						const choice = await ctx.ui.select(
-							`"${registered.name}" is registered at ${registered.path}, but its project.json lives here (${resolvedPath}).`,
-							["update", "cancel", "mint a fresh uuid"],
-						);
-						if (choice === "update") {
-							registerProject(identityEnv, uuid, registered.name, resolvedPath, registered.humans, agentUuid);
-							syncOrgAfterWrite();
-							updateProjectsMdPath(registered.name, registered.path, resolvedPath);
-						} else if (choice === "mint a fresh uuid") {
-							// fork — give this copy its own soul, never silently merge
-							const fresh = mintProjectUuid(memoryPath);
-							git(["add", "project.json"], memoryPath);
-							git(["commit", "-m", "identity: mint fresh project uuid (fork)"], memoryPath);
-							registerProject(identityEnv, fresh, path.basename(resolvedPath), resolvedPath, [], agentUuid);
-							syncOrgAfterWrite();
-						}
-						// "cancel" → no registry write; proceed with the session
-					} else if (!registered) {
-						// project.json exists but the uuid is unknown to the registry → register it
-						registerProject(identityEnv, uuid, path.basename(resolvedPath), resolvedPath, [], agentUuid);
-						syncOrgAfterWrite();
-					}
-					// registered && same path → already reconciled, no-op
-				}
-				// uuid null (legacy, no project.json) → proceed, no registry write (#22 mints it)
+				// #46: mints project.json for legacy roots, adopts unknown uuids,
+				// preserves the move/fork dialog. Idempotent for registered souls.
+				await reconcileProjectRegistration(memoryPath, ctx);
 				await begin(memoryPath);
 				return;
 			}
