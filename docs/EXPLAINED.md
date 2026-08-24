@@ -18,7 +18,11 @@ you: your background, your projects, how you like to communicate. Always
 loaded, kept tiny (~850 tokens). Lives at `~/.pi/agents/<name>/memory/`.
 
 **Zone B — Project memory.** Each project gets its own memory folder
-(`<project>/.memory/`): strategy, status, decisions, observations. Loaded only
+(`<project>/.memory/`): strategy, status, decisions, observations, plus a
+**private context** layer (`system/`, loaded once at session start — the
+project's identity and working agreements, never shipped to the code repo)
+and a **rolling session handoff** (`session/latest.md`, written at `/endwork`,
+surfaced first at `/startwork`; git holds the history). Loaded only
 when you work on that project. Stays private, never in the public code repo.
 
 **Zone C — Session archive.** Raw logs of past conversations, managed by pi
@@ -47,14 +51,17 @@ place, shared by all agents on a machine.
 ## How a working session flows
 
 1. **`/startwork`** — you start working on a project. The agent finds the
-   project's memory, sets the session root, and shows a quick overview: what's
-   there, what changed recently, what's next.
+   project's memory, sets the session root, and shows a quick overview: the
+   last session's handoff (what we decided, what's open, what's next), the
+   memory tree, what changed recently (git log), and the project's private
+   context (`system/`).
 2. **Work** — the agent reads project notes as needed, writes new ones, each
    one a git commit. You can browse the memory tree, read files, search, or ask
    "what did we decide about this?"
-3. **`/endwork`** — the agent updates the project's status notes, commits
-   everything, and clears the session. The next session starts fresh but
-   informed.
+3. **`/endwork`** — the agent writes the session handoff, updates the project's
+   status notes, commits everything. The command verifies the handoff is
+   current (warn + skip, never traps), then clears the session. The next
+   session starts fresh but informed.
 
 ## Why git
 
