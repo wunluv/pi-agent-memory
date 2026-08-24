@@ -9,7 +9,7 @@
  * See SPEC_v4.md for full design.
  */
 
-import type { ExtensionAPI, ToolInfo } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -31,6 +31,7 @@ import {
 	findMemberUuid,
 	findProjectByName,
 	loadAgentIdentity,
+	loadAgentName,
 	loadOrgRegistry,
 	lookupProject,
 	mintProjectUuid,
@@ -543,6 +544,16 @@ function isGitRepo(repoPath: string): boolean {
 function setActiveAgent(name: string): void {
 	activeAgent = name;
 	agentUuid = loadAgentIdentity(identityEnv, name);
+}
+
+/**
+ * #51: show the active agent's name in the TUI footer. Pattern 4 (setStatus) —
+ * additive, persists across renders, never replaces the default footer
+ * (context %, model). No active agent → clear any stale status.
+ */
+function applyAgentStatus(ctx: ExtensionContext): void {
+	const name = loadAgentName(identityEnv, activeAgent);
+	ctx.ui.setStatus("agent", name ? ctx.ui.theme.fg("accent", `◈ ${name}`) : undefined);
 }
 
 /** Search session history with the shared BM25 corpus scorer. */
@@ -1228,6 +1239,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			activeAgent = name;
 			agentUuid = result.uuid;
 			saveActiveAgent(name);
+			applyAgentStatus(ctx);
 			syncAgentAfterIdentity(name, result.uuid);
 			syncOrgAfterWrite();
 
@@ -1298,6 +1310,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					if (!chosen) return;
 					setActiveAgent(chosen);
 					saveActiveAgent(chosen);
+					applyAgentStatus(ctx);
 					ctx.ui.notify(`\u2705 Switched to agent: ${chosen}`, "success");
 				} catch {
 					ctx.ui.notify("No agents found. Use /agent:init <name> to create one.", "info");
@@ -1313,6 +1326,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			setActiveAgent(name);
 			saveActiveAgent(name);
+			applyAgentStatus(ctx);
 			ctx.ui.notify(`\u2705 Switched to agent: ${name}`, "success");
 		},
 	});
@@ -1907,5 +1921,9 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				}
 			}
 		}
+
+		// #51: footer shows the active agent; backfill may have just minted identity,
+		// so apply after the backfill + pull blocks have settled.
+		applyAgentStatus(ctx);
 	});
 }

@@ -81,6 +81,19 @@ function isGitRepo(repoPath: string): boolean {
 	return fs.existsSync(path.join(repoPath, ".git"));
 }
 
+/** Load the agent's display name from agent.json, falling back to the dir basename. Null-safe. */
+export function loadAgentName(env: IdentityEnv, agentName: string | null): string | null {
+	if (!agentName) return null;
+	try {
+		const file = path.join(env.agentsDir, agentName, "memory", "agent.json");
+		if (!fs.existsSync(file)) return agentName;
+		const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+		return typeof parsed.name === "string" && parsed.name ? parsed.name : agentName;
+	} catch {
+		return agentName;
+	}
+}
+
 /** Set repo-local git author for a given identity; fall back to defaults. */
 export function configureRepoAuthor(env: IdentityEnv, repoPath: string, uuid: string | null): void {
 	if (uuid) {

@@ -14,6 +14,7 @@ import * as cp from "node:child_process";
 import {
 	shortUuid,
 	loadAgentIdentity,
+	loadAgentName,
 	loadOrgRegistry,
 	lookupProject,
 	registerProject,
@@ -55,6 +56,29 @@ function subjects(cwd: string): string[] {
 // ─── shortUuid ────────────────────────────────────────────────────────────────
 
 assert.equal(shortUuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400");
+
+// ─── loadAgentName ────────────────────────────────────────────────────────────
+
+{
+	// #51: name from agent.json, fallback to dir basename, null-safe.
+	const env = makeEnv();
+
+	// no agent at all → null
+	assert.equal(loadAgentName(env, null), null);
+
+	// no agent.json → dir basename fallback
+	assert.equal(loadAgentName(env, "alpha"), "alpha");
+
+	// agent.json present → parsed name wins (rename-proof)
+	const agentDir = path.join(env.agentsDir, "alpha", "memory");
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "agent.json"), JSON.stringify({ uuid: "u1", name: "Renamed Alpha", status: "member" }, null, 2));
+	assert.equal(loadAgentName(env, "alpha"), "Renamed Alpha");
+
+	// corrupt agent.json → dir basename fallback
+	fs.writeFileSync(path.join(agentDir, "agent.json"), "{ not json");
+	assert.equal(loadAgentName(env, "alpha"), "alpha");
+}
 
 // ─── fresh init (isNew=true) ─────────────────────────────────────────────────
 
