@@ -60,6 +60,7 @@ import {
 	type SyncConfig,
 	type SyncEnv,
 } from "./sync";
+import { gatherStatus, renderStatus, type StatusEnv } from "./status";
 import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile } from "./paths";
 import { ensureMemoryIgnored } from "./gitignore";
 import { findNearestMemoryRoot } from "./discovery";
@@ -377,6 +378,16 @@ const syncEnv: SyncEnv = {
 	spawn: cp.spawn,
 	spawnSync: cp.spawnSync,
 	nodePath: process.execPath,
+};
+
+// #48: status env — same DI pattern; read-only surface over git + sync + identity.
+const statusEnv: StatusEnv = {
+	git,
+	spawnSync: cp.spawnSync,
+	configPath: SYNC_CONFIG_PATH,
+	logPath: SYNC_LOG_PATH,
+	agentsDir: AGENTS_DIR,
+	orgRoot: ORG_ROOT,
 };
 
 /** Initialize a git repo at the given path */
@@ -1150,6 +1161,44 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "memory_status",
+		label: "Memory Status",
+		description:
+			"Memory + sync health check: resolved root, zone, soul registration, sync config, local git state, last sync result. Optional --check-remote pings the sync server (network). Use when a write or sync seems to have failed silently.",
+		promptSnippet: "Check memory root, registration, sync health",
+		promptGuidelines: [
+			"No network on the hot path — pass checkRemote only when a live check is needed",
+			"An unregistered soul reports 'writes will not sync' — run /startwork to register",
+		],
+		parameters: Type.Object({
+			root: Type.Optional(
+				Type.String({ description: "Explicit memory root to inspect. Defaults to session root, then auto-discovered, then agent root." }),
+			),
+			checkRemote: Type.Optional(
+				Type.Boolean({ description: "Also ping the sync remote (slow, network). Default false." }),
+			),
+		}),
+		async execute(_toolCallId, params) {
+			const root = resolveMemoryRoot(params.root);
+			if (!root) {
+				return {
+					content: [{ type: "text", text: "Memory status: no root resolved. Use /startwork or /agent:switch first." }],
+					details: {},
+				};
+			}
+			const report = gatherStatus(statusEnv, {
+				root,
+				activeAgent,
+				checkRemote: params.checkRemote === true,
+			});
+			return {
+				content: [{ type: "text", text: renderStatus(report) }],
+				details: { zone: report.zone, registered: report.registered, syncEnabled: report.syncEnabled },
+			};
+		},
+	});
+
 	// ─── Commands ───────────────────────────────────────────────────────────────
 
 	pi.registerCommand("agent:init", {
@@ -1277,6 +1326,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 | \`/agent:sync\` | Manually sync memory (pull then push) |
 | \`/agent:pull <uuid>\` | Pull an agent's memory from the sync server |
 | \`/memory:sync-config\` | View or set sync config |
+| \`/memory:status\` | Memory + sync health: root, zone, registration, git, last sync |
 
 ---
 
@@ -1897,6 +1947,21 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 			const result = searchSessions(query);
 			ctx.ui.notify(result.substring(0, 500), "info");
+		},
+	});
+
+	pi.registerCommand("memory:status", {
+		description: "Memory + sync health: root, zone, registration, git state, last sync. Usage: /memory:status [root] [--check-remote]",
+		handler: async (args, ctx) => {
+			const checkRemote = args.includes("--check-remote");
+			const rootArg = args.replace("--check-remote", "").trim() || undefined;
+			const root = resolveMemoryRoot(rootArg);
+			if (!root) {
+				ctx.ui.notify("No active agent and no session root. Use /startwork or /agent:switch first.", "warning");
+				return;
+			}
+			const report = gatherStatus(statusEnv, { root, activeAgent, checkRemote });
+			ctx.ui.notify(renderStatus(report), "info");
 		},
 	});
 

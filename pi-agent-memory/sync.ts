@@ -264,9 +264,10 @@ export function syncPrivateOnce(
 
 /**
  * The detached child runs this self-contained script (no dependency on the
- * compiled module). It does pull --rebase --autostash then push, logs to the
- * log file, cleans up a failed rebase, and ALWAYS exits 0. 60s ceiling per git
- * op (execFileSync timeout sends SIGTERM, never SIGKILL).
+ * compiled module). It does pull --rebase --autostash then push, logs an
+ * attributed result line (repo-prefixed — #48) plus any git errors, cleans up
+ * a failed rebase quietly, and ALWAYS exits 0. 60s ceiling per git op
+ * (execFileSync timeout sends SIGTERM, never SIGKILL).
  */
 export const PUSH_CHILD_SCRIPT = [
 	'const { execFileSync } = require("child_process");',
@@ -274,7 +275,7 @@ export const PUSH_CHILD_SCRIPT = [
 	'const repo = process.env.PI_SYNC_REPO;',
 	'const remote = process.env.PI_SYNC_REMOTE;',
 	'const log = process.env.PI_SYNC_LOG;',
-	'function w(s) { try { fs.appendFileSync(log, s + "\\n"); } catch (e) {} }',
+	'function w(s) { try { fs.appendFileSync(log, repo + " " + s + "\\n"); } catch (e) {} }',
 	'let branch = "main";',
 	'try {',
 	'  const b = execFileSync("git", ["-C", repo, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8", timeout: 5000 }).trim();',
@@ -284,9 +285,12 @@ export const PUSH_CHILD_SCRIPT = [
 	'  try { execFileSync("git", ["-C", repo].concat(args), { timeout: 60000, stdio: "pipe" }); return true; }',
 	'  catch (e) { w(String((e && e.stderr) || (e && e.message) || e)); return false; }',
 	'}',
+	// cleanup noise ("No rebase in progress?", stash pop on a clean tree) never pollutes the log
+	'function quiet(args) { try { execFileSync("git", ["-C", repo].concat(args), { timeout: 60000, stdio: "pipe" }); } catch (e) {} }',
 	'const pulled = run(["pull", "--rebase", "--autostash", remote, branch]);',
-	'if (!pulled) { run(["rebase", "--abort"]); run(["stash", "pop"]); }',
-	'run(["push", remote, branch]);',
+	'if (!pulled) { quiet(["rebase", "--abort"]); quiet(["stash", "pop"]); }',
+	'const pushed = run(["push", remote, branch]);',
+	'w((pulled ? "pull ok; " : "pull failed; ") + (pushed ? "push ok" : "push failed"));',
 	'process.exit(0);',
 ].join("\n");
 
