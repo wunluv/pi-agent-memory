@@ -8,7 +8,9 @@ Keep them concise. Update via `memory_write()` when you learn something stable.
 
 **Zone B — Project Memory (session-scoped):** `.memory/` in the project directory.
 Set by `/startwork`. Contains strategy, per-project status, decisions, observations.
-Loaded on demand via `memory_tree()` and `memory_read()`.
+Loaded on demand via `memory_tree()` and `memory_read()`. Private project context in
+`system/` (loaded once at session start — same name as Zone A's system/, different
+load policy: never auto-injected). Rolling session handoff in `session/latest.md`.
 
 **Zone C — Session Archive (Pi-managed):** Raw conversation logs.
 Accessed via `memory_recall()` and the `super_sessions` pipeline.
@@ -32,9 +34,10 @@ Accessed via `memory_recall()` and the `super_sessions` pipeline.
 5. **Tags for cross-cutting concerns.** Use tags like ["auth", "architecture"]
    on files that span multiple projects.
 
-6. **End-of-session consolidation.** Use `/endwork` at the end of a project session
-   to update status.md files and commit project memory. For non-project consolidation,
-   use `/remember`.
+6. **End-of-session consolidation.** Use `/endwork` at the end of a project session.
+   Write the session handoff (`memory_write("session/latest.md", ...)` — Decisions
+   made / Open threads / Next actions) so the next `/startwork` surfaces it; the
+   command verifies it before clearing. For non-project consolidation, use `/remember`.
 
 ### Session Workflow
 

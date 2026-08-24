@@ -18,6 +18,7 @@ import * as cp from "node:child_process";
 import { rankedSearch } from "./ranked-search";
 import { searchSessionMessages } from "./session-search";
 import { extractWikiLinks, findBacklinks } from "./backlinks";
+import { loadSessionHandoff, SESSION_HANDOFF_PATH } from "./handoff";
 import {
 	budgetSystemInjection,
 	DEFAULT_TOKEN_BUDGET,
@@ -280,6 +281,39 @@ function generateFrontmatter(description: string, tags: string[], importance: nu
 	if (agentId) lines.push(`agent_id: ${agentId}`);
 	lines.push(`created: ${now}`, `updated: ${now}`, "---\n");
 	return lines.join("\n");
+}
+
+/** #49: raw session delta — last N commit subjects with dates from the soul's git log. */
+function recentMemoryDelta(root: string, n = 8): string | null {
+	if (!isGitRepo(root)) return null;
+	const r = git(["log", `-${n}`, "--date=short", "--pretty=format:%h %ad %s"], root);
+	if (r.code !== 0 || !r.stdout.trim()) return null;
+	return r.stdout.trim();
+}
+
+/**
+ * #47: load the project system/ context once at session start. Bounded —
+ * index.md first (the eagle-eye head), then the rest sorted, hard char budget.
+ * One-time cost per session, flat per-turn budget. Null when absent.
+ */
+function loadProjectSystemContext(root: string, budget = 4000): string | null {
+	const sysDir = path.join(root, "system");
+	if (!fs.existsSync(sysDir)) return null;
+	const files = collectMdFiles(sysDir);
+	if (files.length === 0) return null;
+	const indexFile = files.find((f) => path.basename(f) === "index.md");
+	const ordered = [...(indexFile ? [indexFile] : []), ...files.filter((f) => f !== indexFile).sort()];
+	let out = "";
+	for (const file of ordered) {
+		const content = fs.readFileSync(file, "utf-8");
+		const fm = parseFrontmatter(content);
+		const body = fm.body.trim();
+		if (!body) continue;
+		const chunk = `\n### system/${path.relative(sysDir, file).replace(/\\/g, "/")}\n${body}\n`;
+		if (out.length + chunk.length > budget) break; // index.md first → always included
+		out += chunk;
+	}
+	return out || null;
 }
 
 /** Build a formatted tree view for a directory under a given root */
@@ -740,6 +774,21 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 
 		const now = new Date().toISOString().split("T")[0];
 		const projectName = path.basename(resolvedPath);
+
+		// #47: project system/ layer — private context (identity, agreements, memory
+		// rules), the Zone B counterpart of Zone A's system/. Stub only — never
+		// clobbers an existing system/index.md.
+		fs.mkdirSync(path.join(memoryPath, "system"), { recursive: true });
+		const systemIndexPath = path.join(memoryPath, "system", "index.md");
+		if (!fs.existsSync(systemIndexPath)) {
+			const systemContent =
+				`# ${projectName} — Project Context\n\n**Last updated:** ${now}\n\n` +
+				`## Identity\n- What this project is, who it serves, where it lives\n\n` +
+				`## Working Agreements\n- How we work here (rituals, review patterns, communication)\n\n` +
+				`## Memory Rules\n- What gets written where (status.md, decisions/, observations/)\n\n` +
+				`## Eagle Eye\n- See [[reference/index]] for the current state and priorities\n`;
+			writeMemoryFile("system/index.md", generateFrontmatter(`${projectName} project context (private)`, ["context", "system"], 4) + systemContent, memoryPath);
+		}
 
 		if (isOrg) {
 			const indexContent = `# ${projectName} — Project Index\n\n**Last updated:** ${now}\n\n## Sub-Projects\n\n${
@@ -1267,7 +1316,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 | \`/agent:init <name>\` | Initialize a new agent memory repo |
 | \`/agent:switch <name>\` | Switch to a different agent |
 | \`/startwork [project]\` | Start project session, set memory root |
-| \`/endwork\` | End session, update status, commit |
+| \`/endwork\` | End session: commit memory, verify handoff, clear root |
 | \`/memory:init <path>\` | Bootstrap .memory/ in a project dir |
 | \`/remember\` | Consolidate session into global memory |
 | \`/memory:tree [path]\` | Display memory tree |
@@ -1666,14 +1715,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				ctx.ui.notify(
 					`\u2705 Organisation memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: org with ${result.subProjects.length} sub-projects\n` +
-					`   Next: edit strategy.md and per-project status docs`,
+					`   Next: edit system/index.md (project context), strategy.md, and per-project status docs`,
 					"success",
 				);
 			} else {
 				ctx.ui.notify(
 					`\u2705 Project memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: standalone\n` +
-					`   Next: edit status.md with current state`,
+					`   Next: edit status.md (state) and system/index.md (project context)`,
 					"success",
 				);
 			}
@@ -1688,11 +1737,26 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			const begin = (root: string) => {
 				sessionMemoryRoot = root;
 				syncProjectOnStart(root);
+				// #50: handoff surfaced first — the distilled "where we were"
+				const handoff = loadSessionHandoff(root);
+				// #47: project system/ context — loaded once, never injected per-turn
+				const system = loadProjectSystemContext(root);
 				const tree = buildTreeView("reference", root);
-				ctx.ui.notify(
-					`\u2705 Session root set: ${root}\n\n${tree}\n\nWhat are we working on today?`,
-					"success",
-				);
+				// #49: raw delta — what changed since the last session
+				const delta = recentMemoryDelta(root);
+				const parts = [`\u2705 Session root set: ${root}`];
+				if (handoff) {
+					parts.push(
+						`**Last session handoff (${SESSION_HANDOFF_PATH}):**` +
+						(handoff.current ? "" : `\n*(stale — dated ${handoff.updated || "unknown"})*`) +
+						`\n${handoff.content}`,
+					);
+				}
+				parts.push(tree);
+				if (delta) parts.push(`**Last changes in memory:**\n${delta}`);
+				if (system) parts.push(`**Project context (system/):**\n${system}`);
+				parts.push("What are we working on today?");
+				ctx.ui.notify(parts.join("\n\n"), "success");
 			};
 
 			// With auto-discovery, /startwork becomes a ritual: acknowledge the
@@ -1770,7 +1834,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 	});
 
 	pi.registerCommand("endwork", {
-		description: "End work session. Updates status docs, commits, clears session root. Usage: /endwork",
+		description: "End work session: commit project memory, verify session handoff, clear session root. Usage: /endwork",
 		handler: async (_args, ctx) => {
 			if (!sessionMemoryRoot) {
 				ctx.ui.notify("No active session. Use /startwork first, or /remember for global memory consolidation.", "info");
@@ -1799,12 +1863,38 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				}
 			}
 
+			// #50: handoff existence gate — the ritual never silently proceeds
+			// without a current handoff. Warn + skip option; never traps.
+			let handoffLine = "";
+			const handoff = loadSessionHandoff(sessionMemoryRoot);
+			if (!handoff || !handoff.current) {
+				const choice = await ctx.ui.select(
+					`No current session handoff at ${SESSION_HANDOFF_PATH}.` +
+					(handoff ? `\nThe last one is from ${handoff.updated || "an unknown date"}.` : "") +
+					"\nWrite it (memory_write \"session/latest.md\": Decisions made / Open threads / Next actions), or skip anyway?",
+					["skip anyway", "keep session and write the handoff"],
+				);
+				if (choice !== "skip anyway") {
+					ctx.ui.notify(
+						"Session kept. Write the handoff to session/latest.md (Decisions made / Open threads / Next actions), then run /endwork again.",
+					"warning",
+				);
+					return;
+				}
+				handoffLine = handoff
+					? `   Handoff STALE (${SESSION_HANDOFF_PATH} dated ${handoff.updated || "unknown"}) — skipped anyway.\n`
+					: `   No handoff (${SESSION_HANDOFF_PATH}) — skipped anyway.\n`;
+			} else {
+				handoffLine = `   Handoff verified (${SESSION_HANDOFF_PATH}, dated today).\n`;
+			}
+
 			const root = sessionMemoryRoot;
 			sessionMemoryRoot = null;
 
 			ctx.ui.notify(
 				`\u2705 Session ended. Memory root cleared.\n` +
 				commitInfo +
+				handoffLine +
 				`   Project memory at: ${root}\n` +
 				`   Remember to run super_sessions weekly for extraction.`,
 				"success",
