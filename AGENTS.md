@@ -54,7 +54,7 @@ Pi loads this extension from `~/.pi/agent/extensions/pi-agent-memory` (symlinked
 
 ```
 pi-agent-memory/
-  index.ts              Extension: 6 tools, 11 commands, 2 hooks
+  index.ts              Extension entry: 6 tools, 13 commands, 2 hooks (+ 9 modules by concern)
   prompts/
     system.md           Memory system instructions injected into every turn
     startwork.md        /startwork ritual instructions
@@ -107,16 +107,19 @@ Session workflow:
 | `memory_read` | optional root param → session root → agent root |
 | `memory_write` | optional root param → session root → agent root |
 | `memory_search` | optional root param → session root → agent root |
+| `memory_sync_config` | (global config — get/set sync policy) |
 | `memory_recall` | (no root — searches Pi session JSONL) |
 | `super_sessions_analyze` | (separate extension) |
 | `super_sessions_synthesize` | (separate extension) |
 
-## Commands (11)
+## Commands (13)
 
 | Command | Namespace |
 |---------|-----------|
 | `/agent:init` | agent: |
 | `/agent:switch` | agent: |
+| `/agent:sync` | agent: |
+| `/agent:pull [uuid]` | agent: |
 | `/startwork` | (bare) |
 | `/endwork` | (bare) |
 | `/remember` | (bare) |
@@ -125,6 +128,7 @@ Session workflow:
 | `/memory:read` | memory: |
 | `/memory:search` | memory: |
 | `/memory:recall` | memory: |
+| `/memory:sync-config` | memory: |
 
 ## Extension Points (Phase 2 candidates)
 
@@ -139,7 +143,7 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 
 - Node built-ins only (`fs`, `path`, `os`, `child_process`). Zero npm dependencies.
 - TypeBox for parameter schemas (pi SDK requirement)
-- TypeScript — single file (`index.ts`), ~530 lines
+- TypeScript — entry `index.ts` + 9 modules by concern (sync, identity, discovery, paths, backlinks, session-search, ranked-search, context-budget, gitignore). Zero npm dependencies.
 - `memory_write` is always an atomic git commit
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage
@@ -150,8 +154,8 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 - `memory_write` auto-initializes git if no repo exists at the resolved root
 - `parseFrontmatter` only handles simple YAML (description, importance, tags, created, updated). Nested structures ignored.
 - `buildTreeView` walks directories recursively — large memory trees can be slow. Progressive disclosure is the user's responsibility.
-- Session JSONL search (`memory_recall`) does case-insensitive substring match — no stemming, no semantic search.
-- The extension is a single file by design. If it exceeds ~800 lines, split by concern (git helpers, frontmatter, session search) into separate modules.
+- `memory_recall` is BM25-ranked with importance/recency boosts (#42); tolerant of malformed JSONL lines; bounded excerpts.
+- The extension is split by concern into modules (index.ts + 9); `index.ts` remains the only file with tool/command registration.
 - Pi loads the extension by reading `index.ts` from the symlink target. The symlink must exist before Pi starts.
 
 ## Sibling Projects
