@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -1026,6 +1027,42 @@ export default function (pi: ExtensionAPI) {
 			"Use semantic wiki-paths like 'reference/heavenletters/status.md' — the path IS the subject taxonomy",
 			"Use tags for cross-cutting concerns that span multiple projects",
 		],
+		renderCall(args, theme) {
+			return new Text(
+				theme.fg("toolTitle", theme.bold("memory_write")) + " " + theme.fg("accent", args.path),
+				0,
+				0,
+			);
+		},
+		renderResult(result, _options, theme) {
+			const details = result.details as
+				| { path?: string; description?: string; refused?: boolean }
+				| undefined;
+			if (details?.refused) {
+				const text = result.content[0];
+				const raw = text?.type === "text" ? text.text : "";
+				return new Text(
+					raw
+						.split("\n")
+						.map((line) => theme.fg("error", line))
+						.join("\n"),
+					0,
+					0,
+				);
+			}
+			if (details?.path) {
+				const desc = details.description
+					? theme.fg("muted", ` (${details.description})`)
+					: "";
+				return new Text(
+					theme.fg("success", "\uD83D\uDCDD wrote ") + theme.fg("accent", details.path) + desc,
+					0,
+					0,
+				);
+			}
+			const text = result.content[0];
+			return new Text(text?.type === "text" ? text.text : "", 0, 0);
+		},
 		parameters: Type.Object({
 			path: Type.String({ description: "Path relative to memory root, e.g. 'reference/heavenletters/status.md'" }),
 			content: Type.String({ description: "Markdown body content (without frontmatter)" }),
@@ -1107,7 +1144,7 @@ export default function (pi: ExtensionAPI) {
 				: `${targetPath}: ${params.description}`;
 			gitCommit(path.join(root, targetPath), commitMsg, root);
 			return {
-				content: [{ type: "text", text: `\u2705 Written to ${targetPath} and committed.` }],
+				content: [{ type: "text", text: `\uD83D\uDCDD wrote ${targetPath} and committed.` }],
 				details: { path: targetPath, description: params.description, importance, tags },
 			};
 		},
