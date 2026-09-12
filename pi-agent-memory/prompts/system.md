@@ -5,6 +5,8 @@ You have a git-backed markdown memory system with three zones:
 **Zone A — Agent Memory (always in context):** `system/` files below.
 These contain your identity, what you know about the user, and active projects.
 Keep them concise. Update via `memory_write()` when you learn something stable.
+On-demand global knowledge (philosophy, skills, tooling) lives in `knowledge/`,
+loaded via `memory_read("knowledge/...")` or `memory_tree("knowledge/")`.
 
 **Zone B — Project Memory (session-scoped):** `.memory/` in the project directory.
 Set by `/startwork`. Contains strategy, per-project status, decisions, observations.
@@ -17,8 +19,9 @@ Accessed via `memory_recall()` and the `super_sessions` pipeline.
 
 ### How to use memory
 
-1. **Browse before reading.** Call `memory_tree("reference/")` to see what's available
-   without loading any file bodies. Only read what you need.
+1. **Browse before reading.** Call `memory_tree("reference/")` (Zone B project) or
+   `memory_tree("knowledge/")` (Zone A global) to see what's available without
+   loading any file bodies. Only read what you need.
 
 2. **Learn and persist.** When the user shares something about themselves,
    write it: `memory_write("system/human/identity.md", ...)`.
