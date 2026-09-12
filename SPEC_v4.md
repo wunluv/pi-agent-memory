@@ -36,13 +36,8 @@ ZONE C — Session Archive (Pi-managed)             .pi/sessions/
     │   ├── projects.md              # Human-readable index ([[links]]); authoritative path lives in the org registry
     │   └── infrastructure.md        # Servers, services, tooling
     │
-    ├── knowledge/                   ← LAZY: general/personal knowledge (renamed from reference/, 2026-08)
-    │   └── ...                      # philosophy, skills, tooling, general notes — project knowledge lives in Zone B
-    │
-    └── _meta/                       ← LAZY: cross-project concerns (folds into knowledge/ on migration)
-        ├── observations/
-        ├── feedback/
-        └── decisions/
+    └── knowledge/                   ← LAZY: general/personal knowledge (renamed from reference/, 2026-08)
+        └── ...                      # philosophy, skills, tooling, general notes — project knowledge lives in Zone B
 ```
 
 Zone A stays unchanged from v3. Lightweight, stable, always in context.
@@ -363,7 +358,7 @@ End of session ritual:
 
 ### `/remember`
 
-Legacy session consolidation (v3 behavior, retained). The agent reviews conversation and writes observations to `_meta/` in global memory. For project-specific consolidation, use `/endwork`.
+Session consolidation. The agent reviews conversation and writes distilled observations to the resolved memory root: project `.memory/` (via `/endwork`), or global `knowledge/` for non-project consolidation. The legacy `_meta/` store was removed 2026-09-12.
 
 ## Two Memory Patterns
 

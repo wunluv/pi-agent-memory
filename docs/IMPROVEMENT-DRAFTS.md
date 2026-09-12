@@ -437,7 +437,7 @@ This is the conceptual fix. Policy, not just code.
 |------|-------|-----------|-----|
 | **Identity** | `system/persona.md`, `system/human/identity.md`, `system/human/preferences.md` | Human-curated, near-constant | Hard token cap (~400) |
 | **Operational** | `reference/<proj>/status.md` | Overwrite-in-place; `## Current` churns, `## History` is append-only and compressed | `## History` rolls at 20 entries |
-| **Knowledge** | `reference/<proj>/decisions|observations`, `_meta/` | Append, then consolidate into insights | Per-file soft cap, merged by topic |
+| **Knowledge** | `reference/<proj>/decisions|observations` | Append, then consolidate into insights | Per-file soft cap, merged by topic |
 
 The substrate stays markdown; only the *access pattern and decay rule* differ.
 
@@ -488,9 +488,9 @@ async function consolidateSession(sessionRoot: string) {
 Replace the keyword-bucket of raw text with a two-pass shape:
 
 1. **Extract** — collect this session's assistant messages (as today).
-2. **Distill** — before writing, collapse to 1-3 lines each, and *merge into existing* `_meta/` files by tag rather than appending new dated files forever.
+2. **Distill** — before writing, collapse to 1-3 lines each, and *merge into existing* `knowledge/` files by tag rather than appending new dated files forever.
 
-The current implementation writes `session-YYYY-MM-DD.md` files indefinitely. The fix: append to `_meta/observations/<topic>.md` (topic = first tag), so related observations accumulate in one file instead of fanning out. Distillation quality is the agent's job; the tool just needs to *merge, not scatter*.
+The current implementation writes `session-YYYY-MM-DD.md` files indefinitely. The fix: append to `knowledge/observations/<topic>.md` (topic = first tag), so related observations accumulate in one file instead of fanning out. Distillation quality is the agent's job; the tool just needs to *merge, not scatter*.
 
 ---
 
