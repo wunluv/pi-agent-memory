@@ -22,7 +22,7 @@ When the user types `/memory:init <path>`, the command bootstraps `.memory/` in 
 
 6. Scans for existing docs to pre-populate stubs:
    - Reads `README.md` and `package.json` for project name, stack, description
-   - Reads any existing `STATUS.md` files for current state
+   - Reads any existing `status.md` files for current state
    - If standalone, reads the project root
    - If org, reads each sub-project directory
 

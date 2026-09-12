@@ -54,7 +54,7 @@ When the user types `/endwork`:
 
 8. **Session root is cleared** automatically by the command.
 
-### Status.md Convention
+### status.md Convention
 
 Each `.memory/reference/{sub}/status.md` follows this structure:
 

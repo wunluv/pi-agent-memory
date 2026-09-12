@@ -37,7 +37,7 @@ Closing is always explicit and the final step. Never use closing keywords in com
 ## Session Start
 
 1. `git status --short` — flag uncommitted changes
-2. Load `.memory/WIP.md` if exists
+2. Load `.memory/wip.md` if exists
 3. Load project status: `memory_read("reference/status.md", root="~/DEV/pi/agent_memory/.memory")`
 4. Summarize: pending changes, WIP state, next action
 
@@ -54,7 +54,7 @@ Pi loads this extension from `~/.pi/agent/extensions/pi-agent-memory` (symlinked
 
 ```
 pi-agent-memory/
-  index.ts              Extension entry: 6 tools, 13 commands, 2 hooks (+ 9 modules by concern)
+  index.ts              Extension entry: 7 tools, 15 commands, 2 hooks (+ 9 modules by concern)
   prompts/
     system.md           Memory system instructions injected into every turn
     startwork.md        /startwork ritual instructions
@@ -87,6 +87,8 @@ Zone B (Project)   <project>/.memory/               Session-scoped via /startwor
 Zone C (Sessions)  .pi/sessions/                    Pi-managed, via memory_recall/super_sessions
 ```
 
+**Terminology — zones vs buckets.** Zones A/B/C are lifecycle layers (always-injected / session-scoped / archive). The org root `~/.pi/org/` (shared registry + role library) is a fourth, orthogonal store — not "Zone D". SPEC_v4's "buckets" (`system/`, `knowledge/`, `<project>/.memory/`, `~/.pi/org/`) name the same layers by content: Zone A holds `system/` + `knowledge/` + a thin `projects/` index. The two vocabularies are aliases, not competing models.
+
 ```
 before_agent_start hook
   → buildSystemContext()
@@ -99,7 +101,7 @@ Session workflow:
   /endwork → commit, clear sessionMemoryRoot
 ```
 
-## Tools (6)
+## Tools (7)
 
 | Tool | Resolves root via |
 |------|-------------------|
@@ -107,16 +109,18 @@ Session workflow:
 | `memory_read` | optional root param → session root → agent root |
 | `memory_write` | optional root param → session root → agent root |
 | `memory_search` | optional root param → session root → agent root |
+| `memory_status` | optional root param → session root → agent root |
 | `memory_sync_config` | (global config — get/set sync policy) |
 | `memory_recall` | (no root — searches Pi session JSONL) |
 | `super_sessions_analyze` | (separate extension) |
 | `super_sessions_synthesize` | (separate extension) |
 
-## Commands (13)
+## Commands (15)
 
 | Command | Namespace |
 |---------|-----------|
 | `/agent:init` | agent: |
+| `/agent:promote` | agent: |
 | `/agent:switch` | agent: |
 | `/agent:sync` | agent: |
 | `/agent:pull [uuid]` | agent: |
@@ -129,6 +133,7 @@ Session workflow:
 | `/memory:search` | memory: |
 | `/memory:recall` | memory: |
 | `/memory:sync-config` | memory: |
+| `/memory:status` | memory: |
 
 ## Extension Points (Phase 2 candidates)
 
