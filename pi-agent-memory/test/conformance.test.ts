@@ -19,8 +19,9 @@
  */
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
-import { RESERVED_FILENAMES } from "../paths.ts";
+import { RESERVED_FILENAMES, ZONE_A_TOP_LEVEL } from "../paths.ts";
 
 const TEST_DIR = path.resolve(import.meta.dirname);
 const PKG_DIR = path.resolve(TEST_DIR, ".."); // pi-agent-memory/
@@ -171,5 +172,24 @@ test("Tier 3: no stale sync-config field names in live docs", () => {
     bad.length,
     0,
     `Stale sync-config field name (renamed to push_on_commit) in live docs:\n${bad.map((b) => `    ${b}`).join("\n")}`
+  );
+});
+
+test("Tier 4: Zone A on disk holds only system/ + knowledge/", () => {
+  const activePath = path.join(os.homedir(), ".pi", "agents", "active");
+  if (!fs.existsSync(activePath)) return; // no Zone A on this machine — skip
+  const active = fs.readFileSync(activePath, "utf-8").trim();
+  const zoneA = path.join(os.homedir(), ".pi", "agents", active, "memory");
+  if (!fs.existsSync(zoneA)) return; // skip
+
+  const bad: string[] = [];
+  for (const entry of fs.readdirSync(zoneA)) {
+    if (entry === ".git" || entry === "agent.json") continue; // pi-managed, not memory_write targets
+    if (!ZONE_A_TOP_LEVEL.has(entry.toLowerCase())) bad.push(entry);
+  }
+  assert.equal(
+    bad.length,
+    0,
+    `Zone A has non-whitelisted top-level entries (project content?): ${bad.join(", ")}`
   );
 });

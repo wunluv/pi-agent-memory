@@ -7,6 +7,8 @@ These contain your identity, what you know about the user, and active projects.
 Keep them concise. Update via `memory_write()` when you learn something stable.
 On-demand global knowledge (philosophy, skills, tooling) lives in `knowledge/`,
 loaded via `memory_read("knowledge/...")` or `memory_tree("knowledge/")`.
+**Zone A is identity + general knowledge ONLY.** Never write project status,
+decisions, or observations here — that's Zone B (`.memory/`, via `/startwork`).
 
 **Zone B — Project Memory (session-scoped):** `.memory/` in the project directory.
 Set by `/startwork`. Contains strategy, per-project status, decisions, observations.
