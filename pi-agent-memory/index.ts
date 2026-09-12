@@ -63,7 +63,7 @@ import {
 	type SyncEnv,
 } from "./sync";
 import { gatherStatus, renderStatus, type StatusEnv } from "./status";
-import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile } from "./paths";
+import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, zoneATopLevelViolation } from "./paths";
 import { ensureMemoryIgnored } from "./gitignore";
 import { findNearestMemoryRoot } from "./discovery";
 
@@ -1115,6 +1115,25 @@ export default function (pi: ExtensionAPI) {
 					}
 				} catch {
 					// guard is best-effort — never block a write on a guard failure
+				}
+			}
+
+			// Zone A write gate (#63): at the agent root, only system/ + knowledge/ are
+			// writable. Project content belongs in Zone B. Refuse anything else.
+			const agentRoot = getAgentMemoryRoot();
+			if (agentRoot && path.resolve(root) === path.resolve(agentRoot)) {
+				const violation = zoneATopLevelViolation(params.path);
+				if (violation) {
+					return {
+						content: [{
+							type: "text",
+							text:
+								`⛔ Zone A write refused: "${violation}" is project content.\n` +
+								`Zone A holds identity (system/) + general knowledge (knowledge/) only.\n` +
+								`Write project status/decisions/observations to Zone B: /startwork <project>, then memory_write.`,
+						}],
+						details: { refused: true, violation },
+					};
 				}
 			}
 

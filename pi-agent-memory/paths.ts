@@ -13,6 +13,23 @@ import * as path from "node:path";
 export const RESERVED_FILENAMES = new Set(["status", "wip", "index", "strategy", "wbs"]);
 
 /**
+ * Zone A top-level directories — the only content dirs writable at the agent root.
+ * Anything else is project content and belongs in Zone B (`<project>/.memory/`).
+ */
+export const ZONE_A_TOP_LEVEL = new Set(["system", "knowledge"]);
+
+/**
+ * Return the offending top-level segment if a memory path targets Zone A outside
+ * its allowed dirs, else null. Zone A holds identity (system/) + general
+ * knowledge (knowledge/) only.
+ */
+export function zoneATopLevelViolation(filePath: string): string | null {
+	const top = filePath.replace(/\\/g, "/").split("/")[0];
+	const bare = top.toLowerCase().replace(/\.md$/, "");
+	return ZONE_A_TOP_LEVEL.has(bare) ? null : top;
+}
+
+/**
  * Canonicalize a memory path to its single .md form.
  *
  * - appends `.md` when absent:  `reference/status`  → `reference/status.md`

@@ -6,7 +6,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, RESERVED_FILENAMES } from "../paths.ts";
+import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, RESERVED_FILENAMES, ZONE_A_TOP_LEVEL, zoneATopLevelViolation } from "../paths.ts";
 
 function tmpRoot(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "paths-test-"));
@@ -56,6 +56,25 @@ test("refuses non-.md extensions", () => {
 
 test("reserved set is the documented five", () => {
 	assert.deepEqual([...RESERVED_FILENAMES].sort(), ["index", "status", "strategy", "wbs", "wip"]);
+});
+
+test("Zone A top level is a closed set of two", () => {
+	assert.deepEqual([...ZONE_A_TOP_LEVEL].sort(), ["knowledge", "system"]);
+});
+
+test("zoneATopLevelViolation allows system/ and knowledge/", () => {
+	assert.equal(zoneATopLevelViolation("system/human/identity.md"), null);
+	assert.equal(zoneATopLevelViolation("knowledge/philosophy/foo.md"), null);
+	assert.equal(zoneATopLevelViolation("knowledge"), null);
+	assert.equal(zoneATopLevelViolation("system"), null);
+});
+
+test("zoneATopLevelViolation flags project-shaped top-level paths", () => {
+	assert.equal(zoneATopLevelViolation("reference/foo.md"), "reference");
+	assert.equal(zoneATopLevelViolation("projects/x.md"), "projects");
+	assert.equal(zoneATopLevelViolation("_meta/observations/s.md"), "_meta");
+	assert.equal(zoneATopLevelViolation("status.md"), "status.md");
+	assert.equal(zoneATopLevelViolation("anything/new.md"), "anything");
 });
 
 test("writeMemoryFile writes the canonical .md form", () => {
