@@ -27,7 +27,8 @@ Zone C (Sessions)  .pi/sessions/                    Pi-managed, accessed via mem
 
 | Command | Description |
 |---------|-------------|
-| `/agent:init <name>` | Create a new agent with memory repo |
+| `/agent:init <name>` | Create a new agent with memory repo (registers `ephemeral`) |
+| `/agent:promote <name>` | End a trial: flip `ephemeral → member` in the org registry (state flip, no data migration) |
 | `/agent:switch <name>` | Switch active agent |
 | `/startwork [project]` | Start session, set project memory root |
 | `/endwork` | End session, update status, commit |

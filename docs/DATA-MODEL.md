@@ -89,7 +89,7 @@ filesystem location.
 |----------|------|-------------|
 | id | uuid | Canonical identifier (UUID v4). Immutable. |
 | name | string | Human-readable name. The directory name under `~/.pi/agents/<name>/`. |
-| status | enum | `ephemeral` or `member` (org registry membership) |
+| status | enum | `ephemeral` (on trial) or `member` (org registry membership). Defaults to `ephemeral` at creation; promotion via `/agent:promote <name>` is a human-gated state flip, not a data migration (#67). |
 
 **Invariants:**
 - `id` is immutable — created at `/agent:init`, never regenerated.
