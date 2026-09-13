@@ -41,7 +41,7 @@ Plus `~/.pi/org/` — shared agent registry + role library (orthogonal store, no
 
 **Agent membership lifecycle.** A new agent is registered `ephemeral`: a team member under trial. When synergy is proven, `/agent:promote <name>` flips the roster to `member`. Promotion is a state flip in `~/.pi/org/registry.json` plus a mirror in the agent's own `agent.json`; no data moves. The flag gates nothing in code. It is a roster label, and `/agent:promote` is the only consumer of it.
 
-**Concurrency.** The active agent is a single global value in `~/.pi/agents/active`. Each pi process reads it once at session start and holds it in memory, so a running session is never re-pointed mid-flight. But the file is shared: whichever terminal ran `/agent:switch` last decides what the *next* terminal boots as. Parallel work is supported for projects (the Zone B session root is per-process via `/startwork`), not for agent identity. Two sessions on two different agents at the same time is not isolated today.
+**Concurrency.** The active agent is a single global value in `~/.pi/agents/active`. Each pi process reads it once at session start and holds it in memory, so a running session is never re-pointed mid-flight. But the file is shared: whichever terminal ran `/agent:switch` last decides what the *next* terminal boots as. Parallel work is supported for projects (the Zone B session root is per-process via `/startwork`), not for agent identity. Two sessions on two different agents at the same time is not isolated today — the pathway decision is tracked in **#68**, with the binding primitive shared with **#14**.
 
 ### Sync
 
