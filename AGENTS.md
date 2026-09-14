@@ -54,7 +54,7 @@ Pi loads this extension from `~/.pi/agent/extensions/pi-agent-memory` (symlinked
 
 ```
 pi-agent-memory/
-  index.ts              Extension entry: 7 tools, 15 commands, 2 hooks (+ 9 modules by concern)
+  index.ts              Extension entry: 7 tools, 15 commands, 2 hooks (+ 13 modules by concern)
   prompts/
     system.md           Memory system instructions injected into every turn
     startwork.md        /startwork ritual instructions
@@ -148,7 +148,7 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 
 - Node built-ins only (`fs`, `path`, `os`, `child_process`). Zero npm dependencies.
 - TypeBox for parameter schemas (pi SDK requirement)
-- TypeScript — entry `index.ts` + 9 modules by concern (sync, identity, discovery, paths, backlinks, session-search, ranked-search, context-budget, gitignore). Zero npm dependencies.
+- TypeScript — entry `index.ts` + 13 modules by concern (sync, identity, discovery, paths, backlinks, session-search, search-sessions, ranked-search, context-budget, gitignore, handoff, status, project-lookup). Zero npm dependencies.
 - `memory_write` is always an atomic git commit
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage

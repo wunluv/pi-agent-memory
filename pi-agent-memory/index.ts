@@ -17,6 +17,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as cp from "node:child_process";
 import { rankedSearch } from "./ranked-search";
+import {
+	findProjectEntryInBody,
+	movedProjectMessage,
+	pathlessEntryMessage,
+	type ProjectEntry,
+} from "./project-lookup";
 import { searchSessionMessages } from "./session-search";
 import { extractWikiLinks, findBacklinks } from "./backlinks";
 import { loadSessionHandoff, SESSION_HANDOFF_PATH } from "./handoff";
@@ -156,17 +162,16 @@ function isPathLike(input: string): boolean {
 	);
 }
 
-interface ProjectEntry {
-	name: string;
-	path: string;
-}
-
 /**
  * Look up a project by name. Authoritative source is the org registry's
  * uuid-keyed projects section (scanned by the mutable `name` field, #13);
  * falls back to parsing system/projects.md (the demoted human-readable index).
  * Does NOT substring-match over prose — the caller must exclude path-like
  * inputs first (see isPathLike).
+ *
+ * A pathless fallback entry is returned as-is (path: "") so callers can name
+ * the real cause; the registry path can never be empty (findProjectByName
+ * filters blank paths).
  */
 function findProjectEntry(name: string): ProjectEntry | null {
 	const found = findProjectByName(identityEnv, name);
@@ -178,30 +183,7 @@ function findProjectEntry(name: string): ProjectEntry | null {
 	if (!fs.existsSync(projectsFile)) return null;
 
 	const body = parseFrontmatter(fs.readFileSync(projectsFile, "utf-8")).body;
-	const target = name.toLowerCase();
-
-	let current: ProjectEntry | null = null;
-
-	for (const line of body.split("\n")) {
-		// A new project entry begins with "- **Name**"
-		const headerMatch = line.match(/^\s*-\s*\*\*(.+?)\*\*/);
-		if (headerMatch) {
-			if (current && current.name.toLowerCase() === target) return current;
-			current = { name: headerMatch[1].split("/")[0].trim(), path: "" };
-			continue;
-		}
-		// First path-looking backtick token on a continuation line under the entry
-		if (current && !current.path) {
-			const pathMatch = line.match(/`([^`]+)`/);
-			if (pathMatch) {
-				const p = pathMatch[1].replace(/^~/, os.homedir());
-				if (p.includes("/") || p.includes("\\")) current.path = p;
-			}
-		}
-	}
-
-	if (current && current.name.toLowerCase() === target) return current;
-	return null;
+	return findProjectEntryInBody(body, name);
 }
 
 /** Recursively collect all .md file paths under a directory */
@@ -1900,15 +1882,18 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			if (!isPathLike(input)) {
 				const entry = findProjectEntry(input);
 				if (entry) {
+					// #65: a status-only projects.md entry carries no path. Probing
+					// path.join("", ".memory") would resolve against process cwd and never
+					// be right, so refuse before probing and name the real cause.
+					if (!entry.path) {
+						ctx.ui.notify(pathlessEntryMessage(input), "warning");
+						return;
+					}
 					if (fs.existsSync(path.join(entry.path, ".memory"))) {
 						await begin(path.join(entry.path, ".memory"));
 						return;
 					}
-					ctx.ui.notify(
-						`"${input}" is registered at ${entry.path}, but .memory/ wasn't found there.\n` +
-						`The project may have moved — cd into it and run /startwork . to reconcile the path.`,
-						"warning",
-					);
+					ctx.ui.notify(movedProjectMessage(input, entry.path), "warning");
 					return;
 				}
 			}
