@@ -26,9 +26,9 @@ Plus `~/.pi/org/` — shared agent registry + role library (orthogonal store, no
 
 | Command | What it does |
 |---------|--------------|
-| `/startwork [project-name \| path]` | Resolves project path, sets session memory root to `<project>/.memory/`, surfaces the handoff |
-| `/endwork` | Commits project memory, verifies the session handoff exists, clears session root |
-| `/remember` | Consolidates the current session into global memory (writes to `_meta/` paths) |
+| `/startwork [project-name \| path]` | Resolves project path, sets session memory root to `<project>/.memory/`, surfaces the handoff. With no argument it adopts the nearest `.memory/` from cwd, and **announces when discovery walked up** to a parent root rather than binding silently |
+| `/endwork` | Commits project memory, verifies the session handoff is dated today, clears session root. Closes the root this session was actually using (session root if `/startwork` ran, otherwise the auto-discovered project root), never Zone A, and reports the scope it closed |
+| `/remember` | Consolidates the current session into global memory (`knowledge/`). The legacy `_meta/` store was removed 2026-09-12 |
 
 ### Agent identity & registry (`agent:`)
 
@@ -83,6 +83,7 @@ Every tool resolves its root via: optional `root` param → session root → age
 
 - **`memory_write` has no command.** The agent can write directly; you cannot type a write.
   Your write paths are `/remember`, work under `/startwork`, and `/endwork`.
+- **`/endwork` works without `/startwork`.** The memory tools resolve a project root by walking up from cwd, so writes land somewhere even in a session that never ran the ritual. `/endwork` closes that same root instead of refusing, and says which one it was. The write destination never moves mid-session, so a `cd` after the session started does not change what gets closed — `/endwork` flags the drift instead.
 - **`/startwork`, `/endwork`, `/remember` have no tool.** Session framing stays with the human.
 
 ---

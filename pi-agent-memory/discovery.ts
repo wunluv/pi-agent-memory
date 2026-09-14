@@ -82,3 +82,38 @@ export function walkedUpNotice(memoryRoot: string, cwd: string, cwdIsProject: bo
 		hint
 	);
 }
+
+/**
+ * Whether a path is a project memory root the close ritual may target (#69).
+ *
+ * Project roots are named `.memory`. That single check already excludes the
+ * agent root (`~/.pi/agents/<agent>/memory`) and the org root (`~/.pi/org`),
+ * which is the guard #69 requires: `/endwork` must never consolidate Zone A as
+ * if it were a project. `excluded` is belt-and-braces for future shapes.
+ */
+export function isProjectMemoryRoot(candidate: string | null, excluded: Array<string | null> = []): boolean {
+	if (!candidate || path.basename(candidate) !== ".memory") return false;
+	const resolved = path.resolve(candidate);
+	for (const e of excluded) {
+		if (e && path.resolve(e) === resolved) return false;
+	}
+	try {
+		return fs.statSync(candidate).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Notice when cwd has moved outside the bound project's tree (#69/#62).
+ *
+ * Returns null in the ordinary case (cwd inside the owning project). The
+ * destination never changes mid-session; the point is that the human can see
+ * which project was closed when their shell has moved somewhere else.
+ */
+export function scopeDriftNotice(memoryRoot: string, cwd: string): string | null {
+	const owner = path.resolve(path.dirname(memoryRoot));
+	const here = path.resolve(cwd);
+	if (here === owner || here.startsWith(owner + path.sep)) return null;
+	return `Note: cwd is ${here}, outside ${owner}. This session was bound to ${memoryRoot}, which is where its writes landed.`;
+}
