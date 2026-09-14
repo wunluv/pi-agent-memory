@@ -17,6 +17,7 @@ import {
 	loadAgentIdentity,
 	loadOrgRegistry,
 	lookupProject,
+	membershipLabel,
 	readProjectUuid,
 	type GitFn,
 } from "./identity.ts";
@@ -96,7 +97,7 @@ function resolveSoul(env: StatusEnv, root: string, activeAgent: string | null) {
 			uuid,
 			registered: !!member,
 			registrationDetail: member
-				? `agent "${member.name}" (${member.status})`
+				? `agent "${member.name}" (${membershipLabel(member.name, member.status)})`
 				: uuid
 					? `agent uuid ${uuid.slice(0, 8)} — NOT in org registry`
 					: "no agent.json identity",

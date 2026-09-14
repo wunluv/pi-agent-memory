@@ -42,6 +42,7 @@ import {
 	loadAgentName,
 	loadOrgRegistry,
 	lookupProject,
+	membershipLabel,
 	mintProjectUuid,
 	readProjectUuid,
 	registerMember,
@@ -1440,7 +1441,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 
 			ctx.ui.notify(
 				`\u2705 Agent "${name}" ready. UUID: ${result.uuid}${result.kept ? " (kept)" : ""}\n` +
-				`   Org registry: ${result.registered ? `registered (${result.status})` : "FAILED"}\n` +
+				`   Org registry: ${result.registered ? `registered (${membershipLabel(name, result.status)})` : "FAILED"}\n` +
 				`   Next: edit system/ files or /agent:switch ${name}`,
 				"success",
 			);
@@ -2125,9 +2126,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				agentUuid = result.uuid;
 				syncAgentAfterIdentity(activeAgent, result.uuid);
 				syncOrgAfterWrite();
+				// #67: report the ROSTER's view. Membership lives in the org registry
+				// (source of truth, mirrored into agent.json by /agent:promote), and
+				// memory_status reads the registry — so this notify reads it too.
+				const rosterRow = Object.values(loadOrgRegistry(identityEnv).members).find((m) => m.name === activeAgent);
 				ctx.ui.notify(
 					`\u2705 Backfilled "${activeAgent}" on load: identity created, Letta cruft stripped, memory committed.\n` +
-					`   UUID: ${result.uuid}${result.caughtUp ? " | catch-up commit landed" : ""}`,
+					`   UUID: ${result.uuid}${result.caughtUp ? " | catch-up commit landed" : ""}\n` +
+					`   Org registry: ${rosterRow ? membershipLabel(activeAgent, rosterRow.status) : `NOT registered — run /agent:init ${activeAgent}`}`,
 					"success",
 				);
 			} else {

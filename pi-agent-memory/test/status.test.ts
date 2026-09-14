@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as cp from "node:child_process";
 import { gatherStatus, renderStatus, type StatusEnv } from "../status.ts";
-import { registerProject, mintProjectUuid, type GitFn } from "../identity.ts";
+import { registerMember, registerProject, mintProjectUuid, type GitFn } from "../identity.ts";
 import { saveSyncConfig } from "../sync.ts";
 
 const git: GitFn = (args, cwd) => {
@@ -118,6 +118,32 @@ function initMemoryRepo(memoryPath: string): void {
 	assert.equal(r.uuid, "550e8400-e29b-41d4-a716-446655440000");
 	assert.equal(r.remoteUrl, "ssh://host/mem/550e8400-e29b-41d4-a716-446655440000.git");
 	assert.equal(r.registered, false, "not yet in org registry (member row)");
+}
+
+// ─── #67: membership status is explained, not just printed ──────────────────
+
+{
+	const env = makeEnv();
+	const mem = path.join(env.agentsDir, "trialist", "memory");
+	initMemoryRepo(mem);
+	const uuid = "660e8400-e29b-41d4-a716-446655440001";
+	fs.writeFileSync(
+		path.join(mem, "agent.json"),
+		JSON.stringify({ uuid, name: "trialist", status: "ephemeral" }, null, 2),
+	);
+	registerMember(env, "trialist", uuid, "ephemeral");
+
+	const r = gatherStatus(env, { root: mem, activeAgent: "trialist" });
+	assert.equal(r.registered, true);
+	assert.ok(r.registrationDetail.includes("ephemeral — on trial"), r.registrationDetail);
+	assert.ok(r.registrationDetail.includes("/agent:promote trialist"), "names the exit command");
+	assert.ok(renderStatus(r).includes("/agent:promote trialist"), "rendered, not just held");
+
+	// After the flip the label is plain — no stale "on trial" text.
+	registerMember(env, "trialist", uuid, "member");
+	const promoted = gatherStatus(env, { root: mem, activeAgent: "trialist" });
+	assert.ok(promoted.registrationDetail.includes("(member)"), promoted.registrationDetail);
+	assert.ok(!promoted.registrationDetail.includes("on trial"), promoted.registrationDetail);
 }
 
 // ─── org zone ───────────────────────────────────────────────────────────────
