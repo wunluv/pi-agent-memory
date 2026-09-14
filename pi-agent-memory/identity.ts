@@ -284,7 +284,20 @@ export function findMemberUuid(env: IdentityEnv, name: string): string | null {
 	return null;
 }
 
-/** Read a project's immutable uuid from project.json in its .memory/ root. Null if absent (legacy). */
+/**
+ * Membership status in one clause, plus the command that ends a trial (#67).
+ *
+ * `ephemeral` is a real state with real intent (SPEC_v4 §2.1: a new team member
+ * under trial, promoted once synergy is proven) and nothing gates on it — no
+ * sync, context injection, or write path. That makes it invisible unless every
+ * surface that reports it also reports the meaning and the exit. Shared here so
+ * the status surface and the two creation notifies cannot drift apart.
+ */
+export function membershipLabel(name: string, status: "ephemeral" | "member"): string {
+	return status === "ephemeral"
+		? `ephemeral — on trial; /agent:promote ${name} to make it a member`
+		: "member";
+}
 export function readProjectUuid(memoryPath: string): string | null {
 	try {
 		const file = path.join(memoryPath, "project.json");
