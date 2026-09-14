@@ -71,7 +71,12 @@ import {
 import { gatherStatus, renderStatus, type StatusEnv } from "./status";
 import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, zoneATopLevelViolation } from "./paths";
 import { ensureMemoryIgnored } from "./gitignore";
-import { findNearestMemoryRoot } from "./discovery";
+import {
+	discoveredByWalkingUp,
+	findNearestMemoryRoot,
+	looksLikeProjectDir,
+	walkedUpNotice,
+} from "./discovery";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -1853,6 +1858,15 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				const discovered = autoDiscoveredRoot ?? findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 				autoDiscoveredRoot = discovered;
 				if (discovered) {
+					// #66: discovery walks up, so a found root may belong to a project
+					// that CONTAINS cwd (an org root above an un-initialised
+					// sub-project). The session root, the surfaced handoff, every later
+					// write, and reconcileProjectRegistration below all follow this
+					// choice, so state it before binding rather than after.
+					const cwd = process.cwd();
+					if (discoveredByWalkingUp(discovered, cwd)) {
+						ctx.ui.notify(walkedUpNotice(discovered, cwd, looksLikeProjectDir(cwd)), "warning");
+					}
 					// #46: a discovered root is an implicit "this is a project" — mint + register
 					await reconcileProjectRegistration(discovered, ctx);
 					begin(discovered);

@@ -35,3 +35,50 @@ export function findNearestMemoryRoot(startPath: string, piHome: string): string
 		current = parent;
 	}
 }
+
+/**
+ * Whether discovery had to walk up from cwd to find the root (#66).
+ *
+ * The root's OWNER is the directory that holds `.memory/`. When the owner is
+ * cwd, cwd is the project and the binding is unambiguous. When it is anything
+ * else, discovery walked up, and in an org tree that means the root may belong
+ * to a project that CONTAINS cwd rather than to cwd itself (the observed case:
+ * cwd `~/DEV/Heaven/godwriting`, adopted root `~/DEV/Heaven/.memory`).
+ *
+ * The root cannot answer this question: `~/DEV/Heaven/.memory` is a sibling of
+ * `godwriting`, not an ancestor of it, so testing "is the root an ancestor of
+ * cwd" never fires for the incident that motivated the check.
+ */
+export function discoveredByWalkingUp(memoryRoot: string, cwd: string): boolean {
+	return path.resolve(path.dirname(memoryRoot)) !== path.resolve(cwd);
+}
+
+/**
+ * Project signals, used only to decide whether the notice should offer
+ * "run /startwork . to create one". Purely advisory: nothing gates on this.
+ */
+export function looksLikeProjectDir(dir: string): boolean {
+	return [".git", "package.json", "README.md", "AGENTS.md"].some((marker) => {
+		try {
+			return fs.existsSync(path.join(dir, marker));
+		} catch {
+			return false;
+		}
+	});
+}
+
+/**
+ * The walked-up notice (#66). Names both paths so the human can see the
+ * binding before it happens, and never blocks the ritual.
+ */
+export function walkedUpNotice(memoryRoot: string, cwd: string, cwdIsProject: boolean): string {
+	const owner = path.dirname(memoryRoot);
+	const hint = cwdIsProject
+		? `\n${cwd} looks like a project of its own. Run /startwork . to give it its own .memory/, or /startwork <project-name> to bind a registered one.`
+		: "";
+	return (
+		`Session root is ${memoryRoot} (parent memory at ${owner}).\n` +
+		`${cwd} has no .memory/ of its own, so discovery walked up to find this one.` +
+		hint
+	);
+}
