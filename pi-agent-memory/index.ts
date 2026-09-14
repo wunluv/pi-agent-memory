@@ -96,6 +96,10 @@ const SYNC_LOG_PATH = path.join(os.homedir(), ".pi", "agent", "memory-repository
 let activeAgent: string | null = null;
 let agentUuid: string | null = null;
 let sessionMemoryRoot: string | null = null;
+// Resolved roots this session has actually written to via memory_write (#70).
+// The handoff gate exists to capture what a session changed in project memory,
+// so a session that changed nothing has nothing to hand off.
+const sessionWriteRoots = new Set<string>();
 // Undefined means discovery has not run for this session. Once resolved, the
 // value remains stable, including when it is null (no project memory found).
 let autoDiscoveredRoot: string | null | undefined;
@@ -1152,6 +1156,8 @@ export default function (pi: ExtensionAPI) {
 				? `${targetPath}: ${params.description} (override: ${params.overrideReason})`
 				: `${targetPath}: ${params.description}`;
 			gitCommit(path.join(root, targetPath), commitMsg, root);
+			// #70: remember which roots this session touched, for the handoff gate.
+			sessionWriteRoots.add(path.resolve(root));
 			return {
 				content: [{ type: "text", text: `\uD83D\uDCDD wrote ${targetPath} and committed.` }],
 				details: { path: targetPath, description: params.description, importance, tags },
@@ -1987,11 +1993,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				}
 			}
 
-			// #50: handoff existence gate — the ritual never silently proceeds
-			// without a current handoff. Warn + skip option; never traps.
+			// #50 + #70: handoff existence gate. The ritual never silently proceeds
+			// without a current handoff — but the handoff captures what a session
+			// changed in project memory, so a session that wrote nothing here has
+			// nothing to hand off and is not asked to invent one.
 			let handoffLine = "";
 			const handoff = loadSessionHandoff(root);
-			if (!handoff || !handoff.current) {
+			const wroteHere = sessionWriteRoots.has(path.resolve(root));
+			if ((!handoff || !handoff.current) && wroteHere) {
 				// #70: name the rule (dated today) and address the human, who cannot
 				// call memory_write themselves.
 				const choice = await ctx.ui.select(
@@ -2012,11 +2021,18 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				handoffLine = handoff
 					? `   Handoff STALE (${SESSION_HANDOFF_PATH} dated ${handoff.updated || "unknown"}) — skipped anyway.\n`
 					: `   No handoff (${SESSION_HANDOFF_PATH}) — skipped anyway.\n`;
+			} else if (!handoff || !handoff.current) {
+				// Nothing was written here, so there is nothing to hand off. Say so
+				// rather than passing silently or demanding an empty file.
+				handoffLine = handoff
+					? `   Handoff STALE (${SESSION_HANDOFF_PATH} dated ${handoff.updated || "unknown"}) — no memory writes this session, gate not required.\n`
+					: `   No handoff (${SESSION_HANDOFF_PATH}) — no memory writes this session, gate not required.\n`;
 			} else {
 				handoffLine = `   Handoff verified (${SESSION_HANDOFF_PATH}, dated today).\n`;
 			}
 
 			sessionMemoryRoot = null;
+			sessionWriteRoots.clear();
 
 			// State the scope that was closed, and flag a cwd that has drifted
 			// outside it — the write destination never moves, but silence about it
@@ -2158,6 +2174,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		activeAgent = loadActiveAgent();
 		agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
+		sessionWriteRoots.clear();
 		syncOrgOnStart();
 		autoDiscoveredRoot = findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 
