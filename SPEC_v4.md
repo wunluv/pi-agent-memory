@@ -336,25 +336,22 @@ Bootstraps project memory (Zone B) in the given directory:
 
 Start of session ritual:
 
-1. If project name provided, looks up path from Zone A `system/projects.md`
-2. If no project provided, prompts user to select
-3. Sets session memory root to `<project-path>/.memory/`
-4. Loads `memory_tree("reference/")` against session root → eagle eye
-5. Loads `memory_read("reference/index.md")` for full index
-6. Checks git log for recent changes
-7. Presents: "Project. Last changes: <date>. Priority stack: <top 3>. What are we working on today?"
+1. **No argument** — discovers the nearest `.memory/` at or above cwd, excluding the `~/.pi` tree. If discovery walked up (the root's owner is not cwd), it **announces the binding first**, naming the parent root and cwd, and offers `/startwork .` when cwd carries a project signal (`.git`, `package.json`, `README.md`, `AGENTS.md`). Warns, never refuses: a cwd nested inside its own project is legitimate (#66)
+2. **A name** — resolves through the org registry (uuid-keyed), then Zone A `system/projects.md`. An entry with no path is reported as such; no probe is ever made against cwd (#65)
+3. **A path** — resolves `<path>/.memory/`, offering `/memory:init` when it is absent
+4. Reconciles project registration by `project.json` uuid (#46) — including the move/fork dialog
+5. Sets the session memory root, then surfaces in order: `session/latest.md` handoff, the `reference/` tree, the recent memory delta, and project `system/` context (#47, #49, #50)
+6. Presents: "What are we working on today?"
 
 ### `/endwork`
 
 End of session ritual:
 
-1. Summarizes: decisions made, files changed, discoveries
-2. Identifies which `status.md` files need `## Current` updates
-3. Updates each affected status.md via `memory_write()`
-4. Appends milestone entries to `## History` where warranted
-5. Git commit in `.memory/` with session summary
-6. Presents: "Updated: <files changed>. Next session: <top priority>."
-7. Clears session memory root
+1. Resolves the target root: the session root if `/startwork` ran, otherwise the root this session was already using via auto-discovery (#69). Refuses the agent root and the org root, so Zone A is never consolidated as a project
+2. Stage-checks for uncommitted changes, commits them (`endwork: Session consolidation <date>`), and syncs
+3. **Handoff gate** (#50, #70): a handoff whose frontmatter `updated` is not today's date prompts with the rule stated and the human addressed — *"No handoff dated today at `session/latest.md` … Ask the agent to write it, or skip anyway?"* Choosing "keep session" preserves the binding and clears nothing
+4. Clears the session root
+5. Reports the scope it closed, and flags a cwd that has drifted outside the bound project
 
 ### `/remember`
 
