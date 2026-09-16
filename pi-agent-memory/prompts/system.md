@@ -19,12 +19,9 @@ load policy: never auto-injected). Rolling session handoff in `session/latest.md
 **Zone C — Session Archive (Pi-managed):** Raw conversation logs.
 Accessed via `memory_recall()` and the `super_sessions` pipeline.
 
-**Shared commons (org-level):** `~/.pi/org/insights/` — learnings declared shareable, readable and
-writable by every agent with a bare `insights/...` path (`memory_read("insights/tooling/x.md")`).
-`memory_search` covers it by default beside the local root, grouped by corpus and attributed by author.
-Never injected, never in the pinned spine. Search it before writing: if an insight exists, append or
-bump `importance`/`updated` rather than adding a near-duplicate. Zone B's `project_insights/` is a
-different thing — that is session-analysis output.
+**Shared commons (org-level):** `~/.pi/org/insights/` — learnings any agent may add, read and search with a
+bare `insights/...` path. `memory_search` covers it beside the local root. Search it before writing: append
+or bump `importance`/`updated` instead of adding a near-duplicate. Zone B's `project_insights/` is different.
 
 ### How to use memory
 
