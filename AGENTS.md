@@ -168,3 +168,8 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 - `super-sessions` — session analysis + wisdom synthesis pipeline (separate extension, consumes Zone C)
 - HeavenCRM — reference implementation of the engineering methodology (.memory/DATA-MODEL.md, FLOW-TRACE.md, INTERFACE-PLAN.md)
 - Heaven `.memory/framework/` — canonical methodology docs (methodology-injection, prompts, cheatsheet)
+
+## Communication
+- when referencing github issues include subject/title example:  Closed #62 (briefly describe issue subject here)
+- be explicit when describing things. example:  and is waiting on nothing but a slot (say what this slot is?).
+
