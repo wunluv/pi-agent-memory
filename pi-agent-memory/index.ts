@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as cp from "node:child_process";
-import { rankedSearch } from "./ranked-search";
+import { rankedSearchDocuments, documentsFromRoot } from "./ranked-search";
 import {
 	findProjectEntryInBody,
 	movedProjectMessage,
@@ -81,6 +81,9 @@ import {
 	walkedUpNotice,
 } from "./discovery";
 import {
+	commonsScope,
+	INSIGHTS_PREFIX,
+	isInsightsPath,
 	renderScope,
 	renderScopeBlock,
 	resolveScope,
@@ -95,6 +98,8 @@ const ACTIVE_FILE = path.join(AGENTS_DIR, "active");
 const SESSIONS_DIR = path.join(os.homedir(), ".pi", "agent", "sessions");
 const PROMPTS_DIR = path.join(__dirname, "prompts");
 const ORG_ROOT = path.join(os.homedir(), ".pi", "org");
+/** The shared insights commons (#71): org-level, outside every agent and project root. */
+const INSIGHTS_ROOT = path.join(ORG_ROOT, "insights");
 const SYNC_CONFIG_PATH = path.join(os.homedir(), ".pi", "memory-sync.json");
 const SYNC_LOG_PATH = path.join(os.homedir(), ".pi", "agent", "memory-repository-push.log");
 
@@ -158,8 +163,11 @@ function expandHome(input: string): string {
  * The active memory scope (#73): which root resolves, why it won, and whether
  * cwd has drifted outside a bound project. `resolveMemoryRoot()` delegates to
  * this, so the reported scope cannot diverge from the root actually used.
+ *
+ * `pathParam` is the memory path the caller is about to touch, when it has one.
+ * It is what lets the `insights/` prefix address the shared commons (#71).
  */
-function currentScope(rootOverride?: string): MemoryScope | null {
+function currentScope(rootOverride?: string, pathParam?: string): MemoryScope | null {
 	const explicitRoot = rootOverride ? expandHome(rootOverride) : null;
 	// An explicit root short-circuits discovery, exactly as the ladder did before.
 	if (!explicitRoot && autoDiscoveredRoot === undefined) {
@@ -167,6 +175,8 @@ function currentScope(rootOverride?: string): MemoryScope | null {
 	}
 	return resolveScope({
 		explicitRoot,
+		pathParam: pathParam ?? null,
+		orgRoot: ORG_ROOT,
 		sessionRoot: sessionMemoryRoot,
 		autoDiscoveredRoot,
 		agentRoot: getAgentMemoryRoot(),
@@ -175,9 +185,31 @@ function currentScope(rootOverride?: string): MemoryScope | null {
 	});
 }
 
-/** Resolve which memory root to use. Explicit → session → auto-discovered → agent. */
-function resolveMemoryRoot(rootOverride?: string): string | null {
-	return currentScope(rootOverride)?.root ?? null;
+/** Resolve which memory root to use. Explicit → commons → session → discovered → agent. */
+function resolveMemoryRoot(rootOverride?: string, pathParam?: string): string | null {
+	return currentScope(rootOverride, pathParam)?.root ?? null;
+}
+
+/** Which corpora a search covers (#71). One ranking pass over the union. */
+type CorpusFilter = "local" | "shared" | "all";
+
+function searchCorpora(
+	scope: MemoryScope,
+	filter: CorpusFilter,
+): Array<{ scope: MemoryScope; prefix: string }> {
+	const corpora: Array<{ scope: MemoryScope; prefix: string }> = [];
+	if (filter !== "shared") corpora.push({ scope, prefix: "" });
+	// The commons joins the fan-out once it exists. Before that it would only add
+	// an empty corpus to every search header.
+	if (filter !== "local" && fs.existsSync(INSIGHTS_ROOT)) {
+		corpora.push({ scope: commonsScope(INSIGHTS_ROOT, os.homedir()), prefix: INSIGHTS_PREFIX });
+	}
+	return corpora;
+}
+
+/** Ranked hits are grouped by corpus. Shared documents carry the `insights/` prefix. */
+function isSharedHit(hitPath: string): boolean {
+	return hitPath.startsWith(INSIGHTS_PREFIX);
 }
 
 function getSystemDir(): string | null {
@@ -249,6 +281,7 @@ function parseFrontmatter(content: string): {
 	tags: string[];
 	created: string;
 	updated: string;
+	agentId: string;
 	body: string;
 } {
 	const result = {
@@ -519,6 +552,20 @@ function maybeSyncAfterCommit(root: string): void {
 	} else if (readProjectUuid(root)) {
 		maybeSyncAfterZoneBCommit(root);
 	}
+}
+
+/**
+ * The git repo a memory root belongs to (#71).
+ *
+ * The shared commons is a SUBDIRECTORY of the org root, so its repo is the org
+ * repo. Initialising one at `insights/` would fork the history in two and cut
+ * the commons off from `org.git`, which is the whole reason the commons lives
+ * there.
+ */
+function repoRootFor(root: string): string {
+	const resolved = path.resolve(root);
+	const org = path.resolve(ORG_ROOT);
+	return resolved === org || resolved.startsWith(org + path.sep) ? ORG_ROOT : root;
 }
 
 /** Pull the shared org layer at session start. */
@@ -970,7 +1017,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params) {
-			const root = resolveMemoryRoot(params.root);
+			const root = resolveMemoryRoot(params.root, params.path);
 			if (!root) {
 				return {
 					content: [{ type: "text", text: "No active agent and no session root. Use /startwork or /agent:switch first." }],
@@ -978,7 +1025,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			const tree = buildTreeView(params.path || "", root);
-			const scope = currentScope(params.root);
+			const scope = currentScope(params.root, params.path);
 			return {
 				content: [{ type: "text", text: tree + (scope ? renderScopeBlock(scope) : "") }],
 				details: { ...(scope ? scopeDetails(scope) : {}), path: params.path || "/" },
@@ -999,7 +1046,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params) {
-			const root = resolveMemoryRoot(params.root);
+			const root = resolveMemoryRoot(params.root, params.path);
 			if (!root) {
 				return {
 					content: [{ type: "text", text: "No active agent and no session root." }],
@@ -1008,7 +1055,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			// #73: state the scope even when the file is missing. A not-found in the
 			// wrong root is the case where silence costs the most.
-			const scope = currentScope(params.root);
+			const scope = currentScope(params.root, params.path);
 			const resolved = readMemoryFile(params.path, root);
 			if (resolved === null) {
 				return {
@@ -1094,7 +1141,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params) {
-			const root = resolveMemoryRoot(params.root);
+			const root = resolveMemoryRoot(params.root, params.path);
 			if (!root) {
 				return {
 					content: [{ type: "text", text: "No active agent and no session root." }],
@@ -1152,9 +1199,10 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			// Ensure git repo exists
-			if (!isGitRepo(root)) {
-				initGitRepo(root);
+			// Ensure git repo exists. The commons shares the org repo (#71).
+			const repoRoot = repoRootFor(root);
+			if (!isGitRepo(repoRoot)) {
+				initGitRepo(repoRoot);
 			}
 
 			// writeMemoryFile canonicalizes internally (enforce .md + reserved names, refuse non-.md)
@@ -1176,7 +1224,7 @@ export default function (pi: ExtensionAPI) {
 			const commitMsg = params.overrideReason
 				? `${targetPath}: ${params.description} (override: ${params.overrideReason})`
 				: `${targetPath}: ${params.description}`;
-			gitCommit(path.join(root, targetPath), commitMsg, root);
+			gitCommit(path.join(root, targetPath), commitMsg, repoRoot);
 			// #70: remember which roots this session touched, for the handoff gate.
 			sessionWriteRoots.add(path.resolve(root));
 			return {
@@ -1194,6 +1242,12 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Ranked full-text search across memory files",
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),
+			corpus: Type.Optional(
+				Type.Union([Type.Literal("local"), Type.Literal("shared"), Type.Literal("all")], {
+					description:
+						"Which corpora to search: the resolved root, the shared org commons, or both (default all). Ranked in one pass so scores stay comparable.",
+				}),
+			),
 			root: Type.Optional(
 				Type.String({ description: "Memory root override. Defaults to session root, then agent root." }),
 			),
@@ -1207,26 +1261,87 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			const scope = currentScope(params.root);
-			const hits = rankedSearch(params.query, root, { collectMdFiles, parseFrontmatter }, { topN: 10 });
-			if (hits.length === 0) {
+			if (!scope) {
+				return { content: [{ type: "text", text: "No memory root resolved." }], details: {} };
+			}
+			const filter = (params.corpus ?? "all") as CorpusFilter;
+			const corpora = searchCorpora(scope, filter);
+
+			if (corpora.length === 0) {
+				// Only reachable with corpus: "shared" before the commons exists.
 				return {
-					content: [{ type: "text", text: "No matches found." + (scope ? renderScopeBlock(scope, "Searched") : "") }],
-					details: { query: params.query, ...(scope ? scopeDetails(scope) : {}) },
+					content: [{
+						type: "text",
+						text: `No shared commons at ${commonsScope(INSIGHTS_ROOT, os.homedir()).display} yet. Write one with memory_write("${INSIGHTS_PREFIX}<topic>/<name>.md", ...).`,
+					}],
+					details: { query: params.query, corpora: [] },
 				};
 			}
-			// #73: provenance leads the result so hits are read in context. Hits are
-			// grouped by root rather than labelled one by one: with a single root a
-			// per-hit label repeats the same string ten times and says nothing new.
-			// Grouping is the shape #71's fan-out needs.
-			const header = scope
-				? renderScope(scope, "Searched") + (scope.drift ? `\n\u26A0 ${scope.drift}` : "") + "\n\n"
-				: "";
-			const text = hits
-				.map((h, i) => `${i + 1}. ${h.path}  (score ${h.score.toFixed(2)}, ★${h.importance}, ${h.updated})\n   "${h.snippet}"`)
-				.join("\n\n");
+
+			// #71: one ranking pass over the union. BM25 IDF is per-corpus, so ranking
+			// two corpora separately and merging the lists would compare scores that
+			// do not mean the same thing.
+			const docs = corpora.flatMap((c) =>
+				documentsFromRoot(c.scope.root, { collectMdFiles, parseFrontmatter }, c.prefix),
+			);
+			const hits = rankedSearchDocuments(params.query, docs, { topN: 10 });
+
+			// #71: shared documents are collected with the `insights/` prefix, so the
+			// rendered path already carries its source. Grouping adds the root once per
+			// corpus instead of tagging every hit.
+			const header = corpora.length > 1
+				? `Searched: ${corpora.map((c) => `${c.scope.zone} \u00B7 ${c.scope.display}`).join(" + ")}`
+				: renderScope(corpora[0].scope, "Searched");
+			const warnings = [scope.drift, scope.conflict]
+				.filter(Boolean)
+				.map((w) => `\n\u26A0 ${w}`)
+				.join("");
+
+			if (hits.length === 0) {
+				return {
+					content: [{ type: "text", text: `No matches found.\n\n${header}${warnings}` }],
+					details: {
+						query: params.query,
+						corpus: filter,
+						corpora: corpora.map((c) => scopeDetails(c.scope)),
+						...scopeDetails(scope),
+					},
+				};
+			}
+
+			// Author attribution matters only where authorship varies: every local hit
+			// has the same author, so repeating it ten times is noise.
+			const authors = new Map(docs.map((d) => [d.path, d.agentId ?? ""]));
+			const renderHit = (h: (typeof hits)[number], i: number) => {
+				const author = isSharedHit(h.path) ? authors.get(h.path) : "";
+				const by = author ? `  by ${author.slice(0, 8)}` : "";
+				return `${i + 1}. ${h.path}  (score ${h.score.toFixed(2)}, ★${h.importance}, ${h.updated})${by}\n   "${h.snippet}"`;
+			};
+
+			let text: string;
+			if (corpora.length === 1) {
+				text = hits.map(renderHit).join("\n\n");
+			} else {
+				const groups: string[] = [];
+				let n = 0;
+				for (const corpus of corpora) {
+					const shared = corpus.scope.kind === "insights";
+					const group = hits.filter((h) => isSharedHit(h.path) === shared);
+					if (group.length === 0) continue;
+					groups.push(`\u2014 ${corpus.scope.zone} \u00B7 ${corpus.scope.display}\n` + group.map((h) => renderHit(h, n++)).join("\n\n"));
+				}
+				text = groups.join("\n\n");
+			}
+
 			return {
-				content: [{ type: "text", text: header + text }],
-				details: { query: params.query, hits: hits.map((h) => h.path), ...(scope ? scopeDetails(scope) : {}) },
+				content: [{ type: "text", text: `${header}${warnings}\n\n${text}` }],
+				details: {
+					query: params.query,
+					hits: hits.map((h) => h.path),
+					corpus: filter,
+					corpora: corpora.map((c) => scopeDetails(c.scope)),
+					...(scopeDetails(scope)),
+				},
 			};
 		},
 	});
@@ -2088,13 +2203,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 	pi.registerCommand("memory:tree", {
 		description: "Display memory tree. Usage: /memory:tree [path]",
 		handler: async (args, ctx) => {
-			if (!activeAgent && !sessionMemoryRoot) {
+			const pathArg = args.trim();
+			if ((!activeAgent && !sessionMemoryRoot) && !isInsightsPath(pathArg)) {
 				ctx.ui.notify("No active agent or session. Use /startwork or /agent:switch first.", "warning");
 				return;
 			}
-			const root = resolveMemoryRoot();
+			const root = resolveMemoryRoot(undefined, pathArg);
 			if (!root) return;
-			const tree = buildTreeView(args.trim(), root);
+			const tree = buildTreeView(pathArg, root);
 			ctx.ui.notify(tree.substring(0, 500), "info");
 		},
 	});
@@ -2107,11 +2223,12 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				ctx.ui.notify("Usage: /memory:read <path>", "warning");
 				return;
 			}
-			if (!activeAgent && !sessionMemoryRoot) {
+			// The shared commons resolves without an agent or session (#71).
+			if ((!activeAgent && !sessionMemoryRoot) && !isInsightsPath(filePath)) {
 				ctx.ui.notify("No active agent or session.", "warning");
 				return;
 			}
-			const root = resolveMemoryRoot();
+			const root = resolveMemoryRoot(undefined, filePath);
 			if (!root) return;
 			const resolved = readMemoryFile(filePath, root);
 			if (resolved === null) {
@@ -2148,9 +2265,15 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				ctx.ui.notify("No active agent or session.", "warning");
 				return;
 			}
-			const root = resolveMemoryRoot();
-			if (!root) return;
-			const hits = rankedSearch(query, root, { collectMdFiles, parseFrontmatter }, { topN: 5 });
+			const scope = currentScope();
+			if (!scope) return;
+			// Same union corpus as the tool (#71), so the human and the model see the
+			// same hits for the same query.
+			const corpora = searchCorpora(scope, "all");
+			const docs = corpora.flatMap((c) =>
+				documentsFromRoot(c.scope.root, { collectMdFiles, parseFrontmatter }, c.prefix),
+			);
+			const hits = rankedSearchDocuments(query, docs, { topN: 5 });
 			const result = hits.length === 0
 				? "No matches found."
 				: hits.map((h, i) => `${i + 1}. ${h.path} (★${h.importance}, ${h.updated})`).join("\n");
