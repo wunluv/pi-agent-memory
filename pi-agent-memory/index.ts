@@ -80,6 +80,13 @@ import {
 	scopeDriftNotice,
 	walkedUpNotice,
 } from "./discovery";
+import {
+	renderScope,
+	renderScopeBlock,
+	resolveScope,
+	scopeDetails,
+	type MemoryScope,
+} from "./scope";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -142,18 +149,35 @@ function getAgentMemoryRoot(): string | null {
 	return path.join(AGENTS_DIR, activeAgent, "memory");
 }
 
-/** Resolve which memory root to use. Explicit → session → auto-discovered → agent. */
-function resolveMemoryRoot(rootOverride?: string): string | null {
-	if (rootOverride) {
-		// Expand ~ to home directory so agents can use ~/DEV/... in root params
-		const expanded = rootOverride.startsWith("~") ? path.join(os.homedir(), rootOverride.slice(1)) : rootOverride;
-		return expanded;
-	}
-	if (sessionMemoryRoot) return sessionMemoryRoot;
-	if (autoDiscoveredRoot === undefined) {
+/** Expand a leading `~` so agents can use `~/DEV/...` in root params. */
+function expandHome(input: string): string {
+	return input.startsWith("~") ? path.join(os.homedir(), input.slice(1)) : input;
+}
+
+/**
+ * The active memory scope (#73): which root resolves, why it won, and whether
+ * cwd has drifted outside a bound project. `resolveMemoryRoot()` delegates to
+ * this, so the reported scope cannot diverge from the root actually used.
+ */
+function currentScope(rootOverride?: string): MemoryScope | null {
+	const explicitRoot = rootOverride ? expandHome(rootOverride) : null;
+	// An explicit root short-circuits discovery, exactly as the ladder did before.
+	if (!explicitRoot && autoDiscoveredRoot === undefined) {
 		autoDiscoveredRoot = findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 	}
-	return autoDiscoveredRoot || getAgentMemoryRoot();
+	return resolveScope({
+		explicitRoot,
+		sessionRoot: sessionMemoryRoot,
+		autoDiscoveredRoot,
+		agentRoot: getAgentMemoryRoot(),
+		cwd: process.cwd(),
+		home: os.homedir(),
+	});
+}
+
+/** Resolve which memory root to use. Explicit → session → auto-discovered → agent. */
+function resolveMemoryRoot(rootOverride?: string): string | null {
+	return currentScope(rootOverride)?.root ?? null;
 }
 
 function getSystemDir(): string | null {
@@ -954,16 +978,10 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			const tree = buildTreeView(params.path || "", root);
-			const zone = sessionMemoryRoot && !params.root
-				? "Zone B (session)"
-				: params.root
-					? "Zone B (override)"
-					: autoDiscoveredRoot
-						? "Zone B (auto-discovered)"
-						: "Zone A (agent)";
+			const scope = currentScope(params.root);
 			return {
-				content: [{ type: "text", text: tree }],
-				details: { zone, path: params.path || "/" },
+				content: [{ type: "text", text: tree + (scope ? renderScopeBlock(scope) : "") }],
+				details: { ...(scope ? scopeDetails(scope) : {}), path: params.path || "/" },
 			};
 		},
 	});
@@ -988,11 +1006,14 @@ export default function (pi: ExtensionAPI) {
 					details: {},
 				};
 			}
+			// #73: state the scope even when the file is missing. A not-found in the
+			// wrong root is the case where silence costs the most.
+			const scope = currentScope(params.root);
 			const resolved = readMemoryFile(params.path, root);
 			if (resolved === null) {
 				return {
-					content: [{ type: "text", text: `File not found: ${params.path}` }],
-					details: {},
+					content: [{ type: "text", text: `File not found: ${params.path}` + (scope ? renderScopeBlock(scope) : "") }],
+					details: scope ? scopeDetails(scope) : {},
 				};
 			}
 			const { content, ambiguity } = resolved;
@@ -1003,8 +1024,8 @@ export default function (pi: ExtensionAPI) {
 			const backlinkText = formatBacklinks(backlinks);
 			const ambiguityText = ambiguity ? `\n\n\u26A0\uFE0F ${ambiguity}` : "";
 			return {
-				content: [{ type: "text", text: content + linkText + backlinkText + ambiguityText }],
-				details: { path: params.path, links, backlinks, description: fm.description, importance: fm.importance, ambiguity },
+				content: [{ type: "text", text: content + linkText + backlinkText + ambiguityText + (scope ? renderScopeBlock(scope) : "") }],
+				details: { ...(scope ? scopeDetails(scope) : {}), path: params.path, links, backlinks, description: fm.description, importance: fm.importance, ambiguity },
 			};
 		},
 	});
@@ -1185,19 +1206,27 @@ export default function (pi: ExtensionAPI) {
 					details: {},
 				};
 			}
+			const scope = currentScope(params.root);
 			const hits = rankedSearch(params.query, root, { collectMdFiles, parseFrontmatter }, { topN: 10 });
 			if (hits.length === 0) {
 				return {
-					content: [{ type: "text", text: "No matches found." }],
-					details: { query: params.query },
+					content: [{ type: "text", text: "No matches found." + (scope ? renderScopeBlock(scope, "Searched") : "") }],
+					details: { query: params.query, ...(scope ? scopeDetails(scope) : {}) },
 				};
 			}
+			// #73: provenance leads the result so hits are read in context. Hits are
+			// grouped by root rather than labelled one by one: with a single root a
+			// per-hit label repeats the same string ten times and says nothing new.
+			// Grouping is the shape #71's fan-out needs.
+			const header = scope
+				? renderScope(scope, "Searched") + (scope.drift ? `\n\u26A0 ${scope.drift}` : "") + "\n\n"
+				: "";
 			const text = hits
 				.map((h, i) => `${i + 1}. ${h.path}  (score ${h.score.toFixed(2)}, ★${h.importance}, ${h.updated})\n   "${h.snippet}"`)
 				.join("\n\n");
 			return {
-				content: [{ type: "text", text }],
-				details: { query: params.query, hits: hits.map((h) => h.path) },
+				content: [{ type: "text", text: header + text }],
+				details: { query: params.query, hits: hits.map((h) => h.path), ...(scope ? scopeDetails(scope) : {}) },
 			};
 		},
 	});

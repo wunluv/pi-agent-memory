@@ -115,5 +115,5 @@ export function scopeDriftNotice(memoryRoot: string, cwd: string): string | null
 	const owner = path.resolve(path.dirname(memoryRoot));
 	const here = path.resolve(cwd);
 	if (here === owner || here.startsWith(owner + path.sep)) return null;
-	return `Note: cwd is ${here}, outside ${owner}. This session was bound to ${memoryRoot}, which is where its writes landed.`;
+	return `Note: cwd is ${here}, outside ${owner}. This session is bound to ${memoryRoot}: reads, searches and writes all resolve there.`;
 }
