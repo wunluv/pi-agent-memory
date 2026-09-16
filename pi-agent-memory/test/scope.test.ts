@@ -9,7 +9,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { renderScope, renderScopeBlock, resolveScope, scopeDetails, shortenHome } from "../scope.ts";
+import { commonsScope, INSIGHTS_PREFIX, isInsightsPath, renderScope, renderScopeBlock, resolveScope, scopeDetails, shortenHome } from "../scope.ts";
 
 function test(name: string, fn: () => void): void {
 	try {
@@ -211,6 +211,125 @@ test("shortenHome only touches the home prefix", () => {
 	assert.equal(shortenHome("/home/san", "/home/san"), "~");
 	assert.equal(shortenHome("/home/sanx/DEV", "/home/san"), "/home/sanx/DEV", "prefix must be a path segment");
 	assert.equal(shortenHome("/tmp/x", "/home/san"), "/tmp/x");
+});
+
+// ─── #71: the shared commons prefix ──────────────────────────────────────────
+
+test("isInsightsPath recognises the commons prefix and nothing else", () => {
+	assert.equal(isInsightsPath("insights/tooling/x.md"), true);
+	assert.equal(isInsightsPath("insights/"), true);
+	assert.equal(isInsightsPath("./insights/x.md"), true, "a leading ./ is not a different path");
+	assert.equal(isInsightsPath("insightsx/x.md"), false, "prefix must be a path segment");
+	assert.equal(isInsightsPath("reference/insights/x.md"), false, "only top-level counts");
+	assert.equal(isInsightsPath("knowledge/x.md"), false);
+});
+
+test("an insights/ path resolves to the commons, above the session root", () => {
+	const f = fixture();
+	const orgRoot = path.join(f.home, ".pi", "org");
+	const scope = resolveScope({
+		explicitRoot: null,
+		pathParam: "insights/tooling/x.md",
+		orgRoot,
+		sessionRoot: f.projectMemory,
+		autoDiscoveredRoot: null,
+		agentRoot: f.agentRoot,
+		cwd: f.project,
+		home: f.home,
+	});
+	assert.equal(scope?.root, orgRoot, "the org root, so the insights/ prefix still joins");
+	assert.equal(scope?.kind, "insights");
+	assert.equal(scope?.zone, "Org (shared commons)");
+});
+
+test("an explicit root still beats the insights prefix", () => {
+	const f = fixture();
+	const scope = resolveScope({
+		explicitRoot: f.projectMemory,
+		pathParam: "insights/tooling/x.md",
+		orgRoot: path.join(f.home, ".pi", "org"),
+		sessionRoot: null,
+		autoDiscoveredRoot: null,
+		agentRoot: f.agentRoot,
+		cwd: f.project,
+		home: f.home,
+	});
+	assert.equal(scope?.root, f.projectMemory);
+	assert.equal(scope?.kind, "override");
+});
+
+test("a normal path leaves the ladder alone — the commons prefix is the only trigger", () => {
+	const f = fixture();
+	const scope = resolveScope({
+		explicitRoot: null,
+		pathParam: "reference/status.md",
+		orgRoot: path.join(f.home, ".pi", "org"),
+		sessionRoot: f.projectMemory,
+		autoDiscoveredRoot: null,
+		agentRoot: f.agentRoot,
+		cwd: f.project,
+		home: f.home,
+	});
+	assert.equal(scope?.root, f.projectMemory);
+	assert.equal(scope?.kind, "session");
+});
+
+test("two roots claiming insights/ is reported, naming the local one", () => {
+	const f = fixture();
+	const localInsights = path.join(f.projectMemory, "insights");
+	fs.mkdirSync(localInsights, { recursive: true });
+	const scope = resolveScope({
+		explicitRoot: null,
+		pathParam: "insights/x.md",
+		orgRoot: path.join(f.home, ".pi", "org"),
+		sessionRoot: f.projectMemory,
+		autoDiscoveredRoot: null,
+		agentRoot: f.agentRoot,
+		cwd: f.project,
+		home: f.home,
+	});
+	assert.ok(scope?.conflict, "conflict reported");
+	assert.ok(scope!.conflict!.includes(localInsights), `names the local tree: ${scope!.conflict}`);
+	assert.ok(scope!.conflict!.includes("root="), "names the way to reach it");
+});
+
+test("no conflict when the local root has no insights/ of its own", () => {
+	const f = fixture();
+	const scope = resolveScope({
+		explicitRoot: null,
+		pathParam: "insights/x.md",
+		orgRoot: path.join(f.home, ".pi", "org"),
+		sessionRoot: f.projectMemory,
+		autoDiscoveredRoot: null,
+		agentRoot: f.agentRoot,
+		cwd: f.project,
+		home: f.home,
+	});
+	assert.equal(scope?.conflict, null);
+});
+
+test("the commons never reports drift — it is not inside any project", () => {
+	const f = fixture();
+	const scope = resolveScope({
+		explicitRoot: null,
+		pathParam: "insights/x.md",
+		orgRoot: path.join(f.home, ".pi", "org"),
+		sessionRoot: f.projectMemory,
+		autoDiscoveredRoot: null,
+		agentRoot: f.agentRoot,
+		cwd: path.join(f.home, "elsewhere"),
+		home: f.home,
+	});
+	assert.equal(scope?.drift, null);
+});
+
+test("commonsScope renders as a corpus label the search header can use", () => {
+	const f = fixture();
+	const scope = commonsScope(path.join(f.home, ".pi", "org", "insights"), f.home);
+	assert.equal(scope.zone, "Org (shared commons)");
+	assert.equal(scope.display, "~/.pi/org/insights");
+	assert.equal(scope.kind, "insights");
+	assert.equal(renderScope(scope), "scope: Org (shared commons) · ~/.pi/org/insights");
 });
 
 console.log("\nall scope tests passed");
