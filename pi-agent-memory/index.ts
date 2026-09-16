@@ -72,7 +72,14 @@ import {
 import { gatherStatus, renderStatus, type StatusEnv } from "./status";
 import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, zoneATopLevelViolation } from "./paths";
 import { ensureMemoryIgnored } from "./gitignore";
-import { findNearestMemoryRoot } from "./discovery";
+import {
+	discoveredByWalkingUp,
+	findNearestMemoryRoot,
+	isProjectMemoryRoot,
+	looksLikeProjectDir,
+	scopeDriftNotice,
+	walkedUpNotice,
+} from "./discovery";
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
@@ -89,6 +96,10 @@ const SYNC_LOG_PATH = path.join(os.homedir(), ".pi", "agent", "memory-repository
 let activeAgent: string | null = null;
 let agentUuid: string | null = null;
 let sessionMemoryRoot: string | null = null;
+// Resolved roots this session has actually written to via memory_write (#70).
+// The handoff gate exists to capture what a session changed in project memory,
+// so a session that changed nothing has nothing to hand off.
+const sessionWriteRoots = new Set<string>();
 // Undefined means discovery has not run for this session. Once resolved, the
 // value remains stable, including when it is null (no project memory found).
 let autoDiscoveredRoot: string | null | undefined;
@@ -1145,6 +1156,8 @@ export default function (pi: ExtensionAPI) {
 				? `${targetPath}: ${params.description} (override: ${params.overrideReason})`
 				: `${targetPath}: ${params.description}`;
 			gitCommit(path.join(root, targetPath), commitMsg, root);
+			// #70: remember which roots this session touched, for the handoff gate.
+			sessionWriteRoots.add(path.resolve(root));
 			return {
 				content: [{ type: "text", text: `\uD83D\uDCDD wrote ${targetPath} and committed.` }],
 				details: { path: targetPath, description: params.description, importance, tags },
@@ -1854,6 +1867,15 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				const discovered = autoDiscoveredRoot ?? findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 				autoDiscoveredRoot = discovered;
 				if (discovered) {
+					// #66: discovery walks up, so a found root may belong to a project
+					// that CONTAINS cwd (an org root above an un-initialised
+					// sub-project). The session root, the surfaced handoff, every later
+					// write, and reconcileProjectRegistration below all follow this
+					// choice, so state it before binding rather than after.
+					const cwd = process.cwd();
+					if (discoveredByWalkingUp(discovered, cwd)) {
+						ctx.ui.notify(walkedUpNotice(discovered, cwd, looksLikeProjectDir(cwd)), "warning");
+					}
 					// #46: a discovered root is an implicit "this is a project" — mint + register
 					await reconcileProjectRegistration(discovered, ctx);
 					begin(discovered);
@@ -1928,22 +1950,38 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 	pi.registerCommand("endwork", {
 		description: "End work session: commit project memory, verify session handoff, clear session root. Usage: /endwork",
 		handler: async (_args, ctx) => {
-			if (!sessionMemoryRoot) {
-				ctx.ui.notify("No active session. Use /startwork first, or /remember for global memory consolidation.", "info");
+			// #69: the tools write to the auto-discovered project root without
+			// /startwork, so the close ritual binds the same way instead of
+			// refusing in exactly the configuration where writes are working.
+			// The target is the root this session was already using, never a root
+			// re-derived from a mid-session cd (silent scope change is the failure
+			// mode this whole path exists to avoid).
+			const bound = sessionMemoryRoot;
+			const candidate =
+				bound ?? autoDiscoveredRoot ?? findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
+			const root = isProjectMemoryRoot(candidate, [getAgentMemoryRoot(), ORG_ROOT]) ? candidate! : null;
+
+			if (!root) {
+				ctx.ui.notify(
+					`No session to close. /startwork was never run, and no project .memory/ was found from ${process.cwd()}.\n` +
+					`Memory writes resolve to a project root, so start one with /startwork <project-name|path>, ` +
+					`or use /remember for global consolidation.`,
+					"info",
+				);
 				return;
 			}
 
 			// Check for uncommitted changes and report what was saved
 			let commitInfo = "";
-			if (isGitRepo(sessionMemoryRoot)) {
-				const status = git(["status", "--porcelain"], sessionMemoryRoot);
+			if (isGitRepo(root)) {
+				const status = git(["status", "--porcelain"], root);
 				const changed = status.stdout.trim();
 				if (changed) {
 					const now = new Date().toISOString().split("T")[0];
-					git(["add", "-A"], sessionMemoryRoot);
-					const commit = git(["commit", "-m", `endwork: Session consolidation ${now}`], sessionMemoryRoot);
+					git(["add", "-A"], root);
+					const commit = git(["commit", "-m", `endwork: Session consolidation ${now}`], root);
 					if (commit.code === 0) {
-						maybeSyncAfterCommit(sessionMemoryRoot);
+						maybeSyncAfterCommit(root);
 						const head = git(["rev-parse", "--short", "HEAD"], sessionMemoryRoot);
 						const files = changed.split("\n").filter(Boolean).length;
 						commitInfo = `   Committed ${head.stdout.trim()} (${files} file${files === 1 ? "" : "s"}).\n`;
@@ -1955,39 +1993,61 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				}
 			}
 
-			// #50: handoff existence gate — the ritual never silently proceeds
-			// without a current handoff. Warn + skip option; never traps.
+			// #50 + #70: handoff existence gate. The ritual never silently proceeds
+			// without a current handoff — but the handoff captures what a session
+			// changed in project memory, so a session that wrote nothing here has
+			// nothing to hand off and is not asked to invent one.
 			let handoffLine = "";
-			const handoff = loadSessionHandoff(sessionMemoryRoot);
-			if (!handoff || !handoff.current) {
+			const handoff = loadSessionHandoff(root);
+			const wroteHere = sessionWriteRoots.has(path.resolve(root));
+			if ((!handoff || !handoff.current) && wroteHere) {
+				// #70: name the rule (dated today) and address the human, who cannot
+				// call memory_write themselves.
 				const choice = await ctx.ui.select(
-					`No current session handoff at ${SESSION_HANDOFF_PATH}.` +
-					(handoff ? `\nThe last one is from ${handoff.updated || "an unknown date"}.` : "") +
-					"\nWrite it (memory_write \"session/latest.md\": Decisions made / Open threads / Next actions), or skip anyway?",
-					["skip anyway", "keep session and write the handoff"],
+					`No handoff dated today at ${SESSION_HANDOFF_PATH}.` +
+					(handoff
+						? `\nThe last one is from ${handoff.updated || "an unknown date"}, so the ritual cannot verify it.`
+						: "") +
+					"\nAsk the agent to write it (Decisions made / Open threads / Next actions), or skip anyway?",
+					["skip anyway", "keep session — I'll have the handoff written"],
 				);
 				if (choice !== "skip anyway") {
 					ctx.ui.notify(
-						"Session kept. Write the handoff to session/latest.md (Decisions made / Open threads / Next actions), then run /endwork again.",
-					"warning",
-				);
+						`Session kept. Ask the agent to write ${SESSION_HANDOFF_PATH} (Decisions made / Open threads / Next actions), then run /endwork again.`,
+						"warning",
+					);
 					return;
 				}
 				handoffLine = handoff
 					? `   Handoff STALE (${SESSION_HANDOFF_PATH} dated ${handoff.updated || "unknown"}) — skipped anyway.\n`
 					: `   No handoff (${SESSION_HANDOFF_PATH}) — skipped anyway.\n`;
+			} else if (!handoff || !handoff.current) {
+				// Nothing was written here, so there is nothing to hand off. Say so
+				// rather than passing silently or demanding an empty file.
+				handoffLine = handoff
+					? `   Handoff STALE (${SESSION_HANDOFF_PATH} dated ${handoff.updated || "unknown"}) — no memory writes this session, gate not required.\n`
+					: `   No handoff (${SESSION_HANDOFF_PATH}) — no memory writes this session, gate not required.\n`;
 			} else {
 				handoffLine = `   Handoff verified (${SESSION_HANDOFF_PATH}, dated today).\n`;
 			}
 
-			const root = sessionMemoryRoot;
 			sessionMemoryRoot = null;
+			sessionWriteRoots.clear();
+
+			// State the scope that was closed, and flag a cwd that has drifted
+			// outside it — the write destination never moves, but silence about it
+			// is what makes a wrong root indistinguishable from a right one.
+			const scopeLine = bound
+				? `   Project memory at: ${root}\n`
+				: `   Closed the project root discovered at session start (no /startwork this session):\n   ${root}\n`;
+			const drift = scopeDriftNotice(root, process.cwd());
 
 			ctx.ui.notify(
 				`\u2705 Session ended. Memory root cleared.\n` +
 				commitInfo +
 				handoffLine +
-				`   Project memory at: ${root}\n` +
+				scopeLine +
+				(drift ? `   ${drift}\n` : "") +
 				`   Remember to run super_sessions weekly for extraction.`,
 				"success",
 			);
@@ -2114,6 +2174,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 		activeAgent = loadActiveAgent();
 		agentUuid = loadAgentIdentity(identityEnv, activeAgent);
 		sessionMemoryRoot = null; // Clear session root on new session
+		sessionWriteRoots.clear();
 		syncOrgOnStart();
 		autoDiscoveredRoot = findNearestMemoryRoot(process.cwd(), path.join(os.homedir(), ".pi"));
 
