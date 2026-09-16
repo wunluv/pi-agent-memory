@@ -69,10 +69,10 @@ Every tool resolves its root via: optional `root` param → session root → age
 
 | Tool | Notes |
 |------|-------|
-| `memory_tree(path?)` | Directory listing with descriptions and star ratings. No bodies. |
-| `memory_read(path)` | Full file plus extracted wiki-links. |
+| `memory_tree(path?)` | Directory listing with descriptions and star ratings. No bodies. Names the scope it listed. |
+| `memory_read(path)` | Full file plus extracted wiki-links. Names the scope it read, including when the file is missing. |
 | `memory_write(path, content, description, tags?, importance?)` | Always an atomic git commit. Auto-inits git if absent. |
-| `memory_search(query)` | BM25 ranked with importance/recency boosts. |
+| `memory_search(query)` | BM25 ranked with importance/recency boosts. Leads with the scope it searched. |
 | `memory_recall(query)` | Scans session JSONL history across all projects. |
 | `memory_sync_config(set?)` | Get/set `server_url`, `push_on_commit`, `pull_on_start`. |
 | `memory_status(root?, checkRemote?)` | Health check. `checkRemote` pings the server (network). |
@@ -84,6 +84,7 @@ Every tool resolves its root via: optional `root` param → session root → age
 - **`memory_write` has no command.** The agent can write directly; you cannot type a write.
   Your write paths are `/remember`, work under `/startwork`, and `/endwork`.
 - **`/endwork` works without `/startwork`.** The memory tools resolve a project root by walking up from cwd, so writes land somewhere even in a session that never ran the ritual. `/endwork` closes that same root instead of refusing, and says which one it was. The write destination never moves mid-session, so a `cd` after the session started does not change what gets closed — `/endwork` flags the drift instead.
+- **Every read states its scope.** When a result comes back it names the root it came from (`Zone B (session) · ~/DEV/x/.memory`), because a root that binds correctly and silently looks exactly like a wrong one. If you `cd` out of the project mid-session the result adds a drift warning naming both paths. The root never moves when you `cd` — the warning is about what you are reading, not about the destination.
 - **`/startwork`, `/endwork`, `/remember` have no tool.** Session framing stays with the human.
 
 ---
