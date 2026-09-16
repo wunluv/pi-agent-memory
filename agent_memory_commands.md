@@ -28,7 +28,7 @@ Plus `~/.pi/org/` — shared agent registry + role library (orthogonal store, no
 |---------|--------------|
 | `/startwork [project-name \| path]` | Resolves project path, sets session memory root to `<project>/.memory/`, surfaces the handoff. With no argument it adopts the nearest `.memory/` from cwd, and **announces when discovery walked up** to a parent root rather than binding silently |
 | `/endwork` | Commits project memory, verifies the session handoff is dated today, clears session root. Closes the root this session was actually using (session root if `/startwork` ran, otherwise the auto-discovered project root), never Zone A, and reports the scope it closed |
-| `/remember` | Consolidates the current session into global memory (`knowledge/`). The legacy `_meta/` store was removed 2026-09-12 |
+| `/remember` | Consolidates the current session into global memory (writes to `_meta/` paths) |
 
 ### Agent identity & registry (`agent:`)
 
