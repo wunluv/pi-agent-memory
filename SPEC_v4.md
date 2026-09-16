@@ -256,16 +256,31 @@ All file-based tools (`memory_tree`, `memory_read`, `memory_write`, `memory_sear
 
 ### Tool Behaviors
 
+**Scope reporting (#73)**
+
+Every file-based result states the scope it used, because a root that binds correctly and silently is indistinguishable from a wrong one. The ladder is explicit → session → auto-discovered → agent, and one function implements it for both resolution and reporting, so the two cannot diverge.
+
+| Scope | Reported as |
+|-------|-------------|
+| `root` parameter given | `Zone B (override)` |
+| Bound by `/startwork` | `Zone B (session)` |
+| Discovered from cwd at session start | `Zone B (auto-discovered)` |
+| No session root, agent root fallback | `Zone A (agent)` |
+
+`memory_search` leads with the line; `memory_read` and `memory_tree` append it. A read that misses still names the root it searched. When cwd has left a bound project, the result adds a drift warning naming the bound root, the current cwd, the `root=<path>` one-off for the model, and `/startwork <project>` as the human's rebind. No drift is reported for an explicit `root=` (a deliberate choice) or for Zone A (its owner is the agent directory, so a warning would fire on every read). Reporting only: no result changes which root is used.
+
 **`memory_tree(path?, root?)`**
 - Recursively lists directories and `.md` files under `path`
 - Extracts `description` and `importance` from frontmatter
 - Returns formatted tree with star ratings
 - Default path: memory root of the resolved zone
+- Details carry `zone`, `root`, `kind`, `origin` and a `drift` flag
 
 **`memory_read(path, root?)`**
 - Path relative to resolved memory root
 - Returns full markdown content including frontmatter
 - Extracts and lists `[[links]]` found in the body
+- Names the resolved scope, including when the file is not found
 
 **`memory_write(path, content, description, tags?, importance?, root?)`**
 - Path relative to resolved memory root
@@ -279,6 +294,7 @@ All file-based tools (`memory_tree`, `memory_read`, `memory_write`, `memory_sear
 - Full-text search across all `.md` files under resolved memory root
 - Returns matched lines with file paths
 - Limited to 10 matches
+- Leads with the searched scope; hits are grouped by root rather than labelled individually, so a future multi-root search (#71) inherits the shape
 
 **`memory_recall(query)`**
 - Searches Pi session JSONL files across all projects
