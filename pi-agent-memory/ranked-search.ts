@@ -74,6 +74,8 @@ export interface Frontmatter {
   tags: string[];
   created: string;
   updated: string;
+  /** Author's agent uuid. Stamped by memory_write; used to attribute shared hits (#71). */
+  agentId?: string;
   body: string;
 }
 
@@ -98,6 +100,8 @@ export interface RankedTextDocument {
   description?: string;
   importance?: number;
   updated?: string;
+  /** Present on documents read from a root; rendered for shared corpora (#71). */
+  agentId?: string;
 }
 
 export interface RankedSearchOptions {
@@ -121,22 +125,42 @@ function daysSince(isoDate: string, now = Date.now()): number {
 const K1 = 1.5; // term-frequency saturation
 const B = 0.75; // length normalization
 
+/**
+ * Read a root as ranked documents (#71).
+ *
+ * `pathPrefix` is how a corpus declares its own name: the shared commons is
+ * collected with the prefix `insights/`, so every rendered hit carries its
+ * source in the path and no per-hit tag is needed to disambiguate.
+ */
+export function documentsFromRoot(
+  root: string,
+  deps: RankedSearchDeps,
+  pathPrefix = "",
+): RankedTextDocument[] {
+  const { collectMdFiles, parseFrontmatter } = deps;
+  return collectMdFiles(root).map((f): RankedTextDocument => {
+    const rel = path.relative(root, f).split(path.sep).join("/");
+    const content = fs.readFileSync(f, "utf-8");
+    const fm = parseFrontmatter(content);
+    return {
+      path: pathPrefix + rel,
+      body: fm.body,
+      description: fm.description,
+      importance: fm.importance,
+      updated: fm.updated,
+      agentId: fm.agentId,
+    };
+  });
+}
+
 export function rankedSearch(
   query: string,
   root: string,
   deps: RankedSearchDeps,
   opts: RankedSearchOptions = {},
 ): SearchHit[] {
-  const { collectMdFiles, parseFrontmatter } = deps;
-  const files = collectMdFiles(root);
-  if (files.length === 0) return [];
-
-  const docs = files.map((f): RankedTextDocument => {
-    const rel = path.relative(root, f);
-    const content = fs.readFileSync(f, "utf-8");
-    const fm = parseFrontmatter(content);
-    return { path: rel, body: fm.body, description: fm.description, importance: fm.importance, updated: fm.updated };
-  });
+  const docs = documentsFromRoot(root, deps);
+  if (docs.length === 0) return [];
   return rankedSearchDocuments(query, docs, opts);
 }
 
