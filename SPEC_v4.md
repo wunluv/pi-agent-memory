@@ -240,7 +240,7 @@ When no session root is set (no `/startwork` called), tools default to the globa
 | `memory_tree(path?, root?)` | List directory with descriptions and star ratings. No file bodies loaded. |
 | `memory_read(path, root?)` | Read full content of a memory file. Extracts [[wiki-links]]. |
 | `memory_write(path, content, description, tags?, importance?, root?)` | Write/edit with auto-frontmatter and git commit. |
-| `memory_search(query, root?)` | Full-text search across memory repo. |
+| `memory_search(query, corpus?, root?)` | Full-text search across memory repo and the shared commons. |
 | `memory_recall(query)` | Search Pi session JSONL history for past conversations. |
 | `super_sessions_analyze(topic, ...)` | Extract topic-specific observations from sessions. |
 | `super_sessions_synthesize(topic, ...)` | Synthesize per-session analyses into wisdom doc. |
@@ -251,6 +251,8 @@ All file-based tools (`memory_tree`, `memory_read`, `memory_write`, `memory_sear
 
 - **Omitted**: Uses session memory root if set (from `/startwork`), otherwise falls back to global agent memory root (Zone A).
 - **Provided**: Overrides session root. Use when explicitly working across projects.
+
+A path beginning `insights/` resolves against the org root instead (§2.9), whatever the session is bound to. `root` still wins over the prefix.
 
 `memory_recall` does not accept a `root` parameter — it searches Pi session history, not memory files.
 
@@ -290,11 +292,13 @@ Every file-based result states the scope it used, because a root that binds corr
 - If the resolved root has no git repo, auto-initializes one
 - If path exists, edits file — previous version preserved in git
 
-**`memory_search(query, root?)`**
-- Full-text search across all `.md` files under resolved memory root
+**`memory_search(query, corpus?, root?)`**
+- Full-text search across all `.md` files under the resolved root, and the shared `insights/` commons
+- One ranking pass over the union corpus, so scores stay comparable
 - Returns matched lines with file paths
 - Limited to 10 matches
-- Leads with the searched scope; hits are grouped by root rather than labelled individually, so a future multi-root search (#71) inherits the shape
+- Leads with the searched scope; hits are grouped by corpus with a header each, and shared hits are attributed by author
+- `corpus` (`local` | `shared` | `all`, default `all`) selects the corpora
 
 **`memory_recall(query)`**
 - Searches Pi session JSONL files across all projects
@@ -530,8 +534,20 @@ The project's authoritative team binding. Answers one question: **who serves thi
 ~/.pi/org/
   registry.json     — projects (uuid → name/path/humans, #13) + members (uuid → name/status/path, #7) + humans (uuid → name/agents)
   roles/            — role library (hats): shared role specs, evolved by wearers
+  insights/         — the shared learnings commons (#71). Lazy, never injected
   README.md         — what this is, read/write rules, single-writer note
 ```
+
+#### The `insights/` commons (#71)
+
+Learnings declared shareable. One file per insight, so two agents writing different insights never conflict at the content level — only git's index lock is shared, and that is retryable.
+
+- **Resolution.** A path beginning `insights/` resolves against the org root for `memory_read`, `memory_write` and `memory_tree`, whatever the active agent or session root. An explicit `root` parameter still wins. The resolved root is the org root and the path keeps its prefix, so `root` + path still join to the right file.
+- **Collision guard.** A resolved project root may have its own top-level `insights/`. The prefix rule wins, and the result states the conflict, naming the local tree and the `root=` that reaches it.
+- **Search.** `memory_search` fans out over the resolved root *and* `~/.pi/org/insights/`, ranked in **one** `rankedSearchDocuments()` pass: BM25 IDF is per-corpus, so two rankings merged afterwards would compare scores that do not mean the same thing. Shared documents are collected with the `insights/` prefix, so every rendered path carries its source; hits are grouped by corpus with a header each, and shared hits carry `by <uuid8>` from frontmatter `agent_id`.
+- **`corpus` parameter:** `local` | `shared` | `all` (default). The commons joins the fan-out once it exists, so a search header never advertises an empty corpus.
+- **Sync.** Writes ride the org repo (`org.git`): a root inside `~/.pi/org/` commits and pushes as the org root, never as a nested repo.
+- **Non-goals:** no context injection, no pinned-spine entry, no budget accounting, and no change to the Zone A write gate or to `knowledge/`, which stays per-agent.
 
 > Entity model (identity vs name vs path, Human/Agent/Project/Org entities) is
 > documented in `docs/DATA-MODEL.md` (revised 2026-08-20).
