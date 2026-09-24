@@ -74,6 +74,8 @@ All file-based tools accept an optional `root` parameter to override the session
 
 Each sub-project gets an `AGENTS.md` (in its own repo) with a memory pointer telling agents where to load context.
 
+**Canonical state files** (distinct purposes, never overlap): `reference/status.md` (durable project state), `wip.md` (in-flight scratch), `session/latest.md` (rolling handoff). Always full relative paths. Authoritative text in `prompts/system.md`.
+
 ## File Format
 
 Every memory file uses YAML frontmatter + markdown body:

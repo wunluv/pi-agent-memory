@@ -48,6 +48,8 @@ or bump `importance`/`updated` instead of adding a near-duplicate. Zone B's `pro
    made / Open threads / Next actions) so the next `/startwork` surfaces it; the
    command verifies it before clearing. For non-project consolidation, use `/remember`.
 
+**Canonical state files — three, never overlap:** `reference/status.md` (durable project state: live/broken/pending-human), `wip.md` (in-flight scratch, survives restart), `session/latest.md` (rolling handoff: decisions/open/next). Always pass full relative paths — `reference/status.md`, never bare `status.md`.
+
 ### Session Workflow
 
 When the user wants to work on a project:

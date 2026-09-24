@@ -153,6 +153,7 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage
 - `~` in root params expanded to home directory
+- Canonical state filenames — `reference/status.md` (durable state), `wip.md` (in-flight scratch), `session/latest.md` (rolling handoff) — distinct purposes, never overlap. Authoritative text in `pi-agent-memory/prompts/system.md`.
 
 ## Gotchas
 
