@@ -1091,14 +1091,14 @@ export default function (pi: ExtensionAPI) {
 		],
 		renderCall(args, theme) {
 			return new Text(
-				theme.fg("toolTitle", theme.bold("memory_write")) + " " + theme.fg("accent", args.path),
+				theme.fg("toolTitle", theme.bold("memory_write")) + " " + theme.fg("accent", args.path ?? "<no path>"),
 				0,
 				0,
 			);
 		},
 		renderResult(result, _options, theme) {
 			const details = result.details as
-				| { path?: string; description?: string; refused?: boolean }
+				| { path?: string; description?: string; refused?: boolean; missing?: string[] }
 				| undefined;
 			if (details?.refused) {
 				const text = result.content[0];
@@ -1126,9 +1126,14 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text?.type === "text" ? text.text : "", 0, 0);
 		},
 		parameters: Type.Object({
-			path: Type.String({ description: "Path relative to memory root, e.g. 'reference/heavenletters/status.md'" }),
-			content: Type.String({ description: "Markdown body content (without frontmatter)" }),
-			description: Type.String({ description: "Short one-line description. Appears in memory_tree listings." }),
+			// #81: path/content/description are Optional at the SCHEMA level so a
+			// dropped field reaches execute() instead of dying in the harness with an
+			// opaque "undefined" (incident #14 Class A). execute() validates them and
+			// returns a refusal naming what is missing. The descriptions still say
+			// "Required." so models treat them as required.
+			path: Type.Optional(Type.String({ description: "Required. Path relative to memory root, e.g. 'reference/heavenletters/status.md'" })),
+			content: Type.Optional(Type.String({ description: "Required. Markdown body content (without frontmatter)" })),
+			description: Type.Optional(Type.String({ description: "Required. Short one-line description. Appears in memory_tree listings." })),
 			tags: Type.Optional(Type.Array(Type.String(), { description: "Tags for search and filtering" })),
 			importance: Type.Optional(
 				Type.Number({ description: "Importance 1-5. Controls star rating in tree view. Default 3." }),
@@ -1141,6 +1146,27 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params) {
+			// #81 legible validation: schema-level requiredness let the harness reject
+			// a dropped field before execute() ran, surfacing as "memory_write:
+			// undefined". Validate here instead, where the refusal names the missing
+			// field and echoes what the call DID carry, so the retry is instant.
+			const missing: string[] = [];
+			if (!params.path) missing.push("path");
+			if (params.content === undefined) missing.push("content");
+			if (params.description === undefined) missing.push("description");
+			if (missing.length > 0) {
+				return {
+					content: [{
+						type: "text",
+						text:
+							`⛔ memory_write rejected: required field(s) missing: ${missing.join(", ")}.\n` +
+							`The call carried: ${params.content ? `${params.content.length} chars of content` : "no content"}` +
+							`${params.description ? `, description "${params.description}"` : ""}.\n` +
+							`Retry the same call with every required field present (path, content, description), e.g. path: "reference/status.md".`,
+					}],
+					details: { refused: true, missing },
+				};
+			}
 			const root = resolveMemoryRoot(params.root, params.path);
 			if (!root) {
 				return {
