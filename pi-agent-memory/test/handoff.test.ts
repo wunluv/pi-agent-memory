@@ -7,25 +7,28 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseHandoff, loadSessionHandoff, SESSION_HANDOFF_PATH } from "../handoff.ts";
+import { parseHandoff, loadSessionHandoff, SESSION_HANDOFF_PATH, REQUIRED_HANDOFF_SECTIONS } from "../handoff.ts";
 
 const TODAY = "2026-08-24";
 
 // ─── parseHandoff ────────────────────────────────────────────────────────────
 
 {
-	// #50 schema: body carries Decisions made / Open threads / Next actions;
-	// date comes from frontmatter updated (memory_write stamps it).
+	// #50 + #82 schema: the state file carries all four sections; the date comes
+	// from frontmatter updated (memory_write stamps it).
 	const raw = [
 		"---",
-		'description: "Session handoff"',
+		'description: "Session state and handoff"',
 		"importance: 3",
 		"tags: [\"session\"]",
 		"agent_id: 24168a68-e50c-41a9-a9fe-a4e628643a02",
 		`created: ${TODAY}`,
 		`updated: ${TODAY}`,
 		"---",
-		"# Session Handoff",
+		"# Session state",
+		"",
+		"## Current state",
+		"- Live: d5 in-page checkout",
 		"",
 		"## Decisions made",
 		"- Shipped #51 and #46",
@@ -43,9 +46,60 @@ const TODAY = "2026-08-24";
 	const h = parseHandoff(raw, TODAY);
 	assert.equal(h.current, true);
 	assert.equal(h.updated, TODAY);
-	assert.ok(h.content.includes("## Decisions made"), "body keeps the schema sections");
+	assert.deepEqual(h.missingSections, [], "complete schema reports nothing missing");
+	assert.ok(h.content.includes("## Current state"), "body keeps the durable section");
 	assert.ok(!h.content.includes("updated:"), "frontmatter stripped from body");
 	assert.ok(h.content.includes("1. #47"), "next actions preserved");
+}
+
+{
+	// #82: a pre-amendment handoff (the old 3-section schema) is readable but
+	// reports the missing durable section rather than passing silently.
+	const raw = [
+		"---",
+		`updated: ${TODAY}`,
+		"---",
+		"## Decisions made",
+		"- old schema",
+		"",
+		"## Open threads",
+		"- none",
+		"",
+		"## Next actions",
+		"1. x",
+		"",
+	].join("\n");
+	const h = parseHandoff(raw, TODAY);
+	assert.equal(h.current, true, "still current — the date is what gates");
+	assert.deepEqual(h.missingSections, ["## Current state"]);
+}
+
+{
+	// #82: matching is case-insensitive and tolerant of a trailing qualifier, so
+	// a dated heading still counts. A `###` heading does NOT satisfy a `##`
+	// requirement — that is the level check, isolated by omitting the real one.
+	const raw = [
+		"---",
+		`updated: ${TODAY}`,
+		"---",
+		"## Current State (2026-09-29)",
+		"## DECISIONS MADE",
+		"### open threads",
+		"## Next actions (top 3)",
+		"",
+	].join("\n");
+	const h = parseHandoff(raw, TODAY);
+	assert.deepEqual(
+		h.missingSections,
+		["## Open threads"],
+		"case variants satisfy the contract; a ### heading does not",
+	);
+}
+
+{
+	// Every required section is reported when there are no headings at all.
+	const h = parseHandoff("just prose, no headings\n", TODAY);
+	assert.deepEqual(h.missingSections, [...REQUIRED_HANDOFF_SECTIONS]);
 }
 
 {
@@ -95,6 +149,7 @@ const TODAY = "2026-08-24";
 	assert.ok(g, "garbage is still readable, never throws");
 	assert.equal(g!.updated, "");
 	assert.equal(g!.current, false);
+	assert.deepEqual(g!.missingSections, [...REQUIRED_HANDOFF_SECTIONS]);
 }
 
 console.log("handoff.test.ts — all assertions passed");

@@ -172,7 +172,7 @@ session_start   → clear session root; syncOrgOnStart (2.5s fail-fast); auto-di
                 → named: resolve path → Case A (.memory exists: reconcile uuid, fork prompt)
                              → Case B (registry/projects.md lookup)
                              → Case C (offer bootstrap via /memory:init)
-/endwork        → update status.md ## Current; commit; clear session root
+/endwork        → verify state file (four sections); commit; clear session root
 ```
 
 ## 9. Module map
