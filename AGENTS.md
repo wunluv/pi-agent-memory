@@ -38,7 +38,7 @@ Closing is always explicit and the final step. Never use closing keywords in com
 
 1. `git status --short` — flag uncommitted changes
 2. Load `.memory/wip.md` if exists
-3. Load project status: `memory_read("reference/status.md", root="~/DEV/pi/agent_memory/.memory")`
+3. Load project state: `memory_read("session/latest.md", root="~/DEV/pi/agent_memory/.memory")`
 4. Summarize: pending changes, WIP state, next action
 
 ## Entry Points
@@ -59,8 +59,9 @@ file.
 
 Repo tree, module map and what each module owns: `docs/TECHNICAL.md` §9. Design and planning:
 `docs/DATA-MODEL.md`, `docs/EXPLAINED.md`, `docs/WBS.md`, `docs/IMPROVEMENT-DRAFTS.md`. Canonical spec:
-`SPEC_v4.md`. Project memory lives in `.memory/` (`reference/status.md`, `wip.md`,
-`session/latest.md`).
+`SPEC_v4.md`. Project memory lives in `.memory/`: `session/latest.md` is the state file (current state,
+decisions, next actions), `wip.md` is in-flight scratch that survives a restart, and `reference/` holds
+everything else.
 
 ## Architecture
 
@@ -131,7 +132,7 @@ Four hooks are absent in Phase 1 by design, so Phase 2 extends rather than modif
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage
 - `~` in root params expanded to home directory
-- Canonical state filenames — `reference/status.md` (durable state), `wip.md` (in-flight scratch), `session/latest.md` (rolling handoff) — distinct purposes, never overlap. Authoritative text in `pi-agent-memory/prompts/system.md`.
+- Canonical state files — `session/latest.md` (the state file: current state, decisions, open threads, next actions) and `wip.md` (resume state: exact commands, current blocker) — distinct purposes, never overlap. `reference/status.md` retired 2026-09-29 (#82); its durable content moved into `## Current state` at the top of `session/latest.md`. Authoritative text in `pi-agent-memory/prompts/system.md`.
 
 ## Procedures
 
