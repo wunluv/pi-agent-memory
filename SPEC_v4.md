@@ -8,6 +8,8 @@ Letta Code's memory model works: two-tier git-backed markdown with frontmatter, 
 
 v4 adds multi-root support — agents can work across projects without mixing project memory into their global identity store. Each project gets its own `.memory/` directory. A session-scoped root lets agents pivot between projects cleanly.
 
+> **Amended 2026-09-29 (#82).** `reference/status.md` is retired as a state file. The project's single state file is `session/latest.md`, carrying `## Current state` / `## Decisions made` / `## Open threads` / `## Next actions`. Wherever this spec says `status.md`, read `session/latest.md`: the durable `## Current` content lives in `## Current state`, and git is the history in place of `## History`. `wip.md` carries resume state (exact commands, current blocker). This spec is retained as the v4 design record; `pi-agent-memory/prompts/system.md` and `README.md` are the live contract.
+
 ## Architecture: Three Zones
 
 ```
@@ -53,10 +55,11 @@ Two patterns depending on the project type:
   .memory/                          ← local git + optional private remote (mem server)
     reference/
       index.md                      ← project eagle eye
-      status.md                     ← operational logbook
       strategy.md                   ← roadmap, dependencies
       decisions/
       observations/
+    session/
+      latest.md                     ← the state file (amended 2026-09-29, #82)
     project_insights/               ← super_sessions output
       analyses/
       wisdom/
@@ -73,7 +76,8 @@ Two patterns depending on the project type:
       index.md                      ← eagle eye across ALL sub-projects
       strategy.md                   ← cross-project POA, dependency map
       daily_hl/
-        status.md                   ← sub-project status lives HERE
+        status.md                   ← RETIRED #82: sub-project state lives in the
+                                      child's own root, daily_hl/.memory/session/latest.md
         decisions/
         observations/
       heavencrm/
@@ -117,14 +121,14 @@ Every project (standalone or sub-project) follows these conventions:
 | `AGENTS.md` | Repo root | GitHub | Agents (public) | Human + agent (`/memory:init`) |
 | `ARCHITECTURE.md` | Repo root | GitHub | Humans + agents | Human + agent |
 | `STATUS.md` | Repo root | GitHub | Maintainers | Lightweight (version + issues link) |
-| `.memory/reference/status.md` | `.memory/` | Local only | Agents | Agent (`/endwork`) |
+| `.memory/session/latest.md` | `.memory/` | Local only | Agents | Agent (`/endwork`) |
 | `.memory/reference/strategy.md` | `.memory/` | Local only | Human + agent | Human + agent |
 
 **`AGENTS.md`** is a terse operational map for agents: stack, entry points, key files, conventions, gotchas. Sub-500 words. An agent loads it and knows the terrain without reading source code.
 
 **Repo `STATUS.md`** is a signpost: version, deployed status, link to open issues. One paragraph.
 
-**`.memory` `status.md`** is the operational logbook: `## Current` (what's happening now), `## Plan` (next steps, dependencies), `## History` (milestones, decisions, session log). Agents write `## Current` at `/endwork`. Humans review periodically.
+**`.memory` `session/latest.md`** is the state file: `## Current state` (what is live, built, blocked, pending a human), `## Decisions made`, `## Open threads`, `## Next actions`. Agents write all four at `/endwork`; `/endwork` names any that are missing. Amended 2026-09-29 (#82) — this replaced the `status.md` operational logbook, whose `## History` is now git's job.
 
 ## Memory File Format
 

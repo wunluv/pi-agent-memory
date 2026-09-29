@@ -862,14 +862,23 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 				`# ${projectName} — Project Context\n\n**Last updated:** ${now}\n\n` +
 				`## Identity\n- What this project is, who it serves, where it lives\n\n` +
 				`## Working Agreements\n- How we work here (rituals, review patterns, communication)\n\n` +
-				`## Memory Rules\n- What gets written where (status.md, decisions/, observations/)\n\n` +
+				`## Memory Rules\n- What gets written where (session/latest.md, wip.md, decisions/, observations/)\n\n` +
 				`## Eagle Eye\n- See [[reference/index]] for the current state and priorities\n`;
 			writeMemoryFile("system/index.md", generateFrontmatter(`${projectName} project context (private)`, ["context", "system"], 4) + systemContent, memoryPath);
 		}
 
 		if (isOrg) {
-			const indexContent = `# ${projectName} — Project Index\n\n**Last updated:** ${now}\n\n## Sub-Projects\n\n${
-				subProjects.map((sp) => `| ${sp} | Pending | [[reference/${sp}/status]] |`).join("\n")
+			// #82: a child with its own memory root owns its own state, so the row
+			// points at that root rather than at a status file the org root would
+			// have to keep in sync. Children without a memory root say so.
+			const indexContent = `# ${projectName} — Project Index\n\n**Last updated:** ${now}\n\n## Sub-Projects\n\n| Sub-Project | Memory root |\n|---|---|\n${
+				subProjects
+					.map((sp) =>
+						fs.existsSync(path.join(resolvedPath, sp, ".memory"))
+							? `| ${sp} | \`${sp}/.memory/\` |`
+							: `| ${sp} | *(none — state goes in this root at \`reference/${sp}/\`)* |`,
+					)
+					.join("\n")
 			}\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
 			writeMemoryFile("reference/index.md",
 				generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
@@ -877,21 +886,10 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 			const strategyContent = `# ${projectName} — Strategy\n\n**Last updated:** ${now}\n\n## Current Priorities\n\nTBD\n\n## Dependency Map\n\nTBD\n\n## Revenue / Budget\n\nTBD\n`;
 			writeMemoryFile("reference/strategy.md",
 				generateFrontmatter(`${projectName} strategy and roadmap`, ["strategy"], 5) + strategyContent, memoryPath);
-
-			for (const sp of subProjects) {
-				fs.mkdirSync(path.join(memoryPath, "reference", sp), { recursive: true });
-				const statusContent = `# ${sp} — Status\n\n**Last updated:** ${now}\n\n## Current\n\n- Status pending\n\n## Plan\n\n- TBD\n\n## History\n\n- ${now}: .memory/ initialized\n`;
-				writeMemoryFile(`reference/${sp}/status.md`,
-					generateFrontmatter(`${sp} project status`, ["status", sp], 4) + statusContent, memoryPath);
-			}
 		} else {
-			const indexContent = `# ${projectName}\n\n**Last updated:** ${now}\n\n## Status\n\nSee [[reference/status]]\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
+			const indexContent = `# ${projectName}\n\n**Last updated:** ${now}\n\n## Status\n\nState lives in \`session/latest.md\` — written at \`/endwork\`, not yet written.\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
 			writeMemoryFile("reference/index.md",
 				generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
-
-			const statusContent = `# ${projectName} — Status\n\n**Last updated:** ${now}\n\n## Current\n\n- Status pending\n\n## Plan\n\n- TBD\n\n## History\n\n- ${now}: .memory/ initialized\n`;
-			writeMemoryFile("reference/status.md",
-				generateFrontmatter(`${projectName} operational status`, ["status"], 4) + statusContent, memoryPath);
 		}
 
 		git(["add", "-A"], memoryPath);
@@ -1162,7 +1160,7 @@ export default function (pi: ExtensionAPI) {
 							`⛔ memory_write rejected: required field(s) missing: ${missing.join(", ")}.\n` +
 							`The call carried: ${params.content ? `${params.content.length} chars of content` : "no content"}` +
 							`${params.description ? `, description "${params.description}"` : ""}.\n` +
-							`Retry the same call with every required field present (path, content, description), e.g. path: "reference/status.md".`,
+							`Retry the same call with every required field present (path, content, description), e.g. path: "session/latest.md".`,
 					}],
 					details: { refused: true, missing },
 				};
@@ -1566,7 +1564,9 @@ Edit these files directly or use \`memory_write()\` via the agent.
 
 \`\`\`
 <project>/            # Semantic wiki-paths organized by project/domain
-├── status.md
+├── session/
+│   └── latest.md     # The state file, overwritten each session
+├── wip.md            # Resume state: exact commands, current blocker
 ├── decisions/
 ├── observations/
 ├── feedback/
@@ -1987,14 +1987,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				ctx.ui.notify(
 					`\u2705 Organisation memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: org with ${result.subProjects.length} sub-projects\n` +
-					`   Next: edit system/index.md (project context), strategy.md, and per-project status docs`,
+					`   Next: edit system/index.md (project context) and strategy.md; each child with its own .memory/ keeps its own state in session/latest.md`,
 					"success",
 				);
 			} else {
 				ctx.ui.notify(
 					`\u2705 Project memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: standalone\n` +
-					`   Next: edit status.md (state) and system/index.md (project context)`,
+					`   Next: edit system/index.md (project context). State goes to session/latest.md at /endwork.`,
 					"success",
 				);
 			}
@@ -2019,8 +2019,11 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				const parts = [`\u2705 Session root set: ${root}`];
 				if (handoff) {
 					parts.push(
-						`**Last session handoff (${SESSION_HANDOFF_PATH}):**` +
+						`**State file — last session (${SESSION_HANDOFF_PATH}):**` +
 						(handoff.current ? "" : `\n*(stale — dated ${handoff.updated || "unknown"})*`) +
+						(handoff.missingSections.length
+							? `\n*(missing ${handoff.missingSections.join(", ")})*`
+							: "") +
 						`\n${handoff.content}`,
 					);
 				}
@@ -2199,6 +2202,12 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					: `   No handoff (${SESSION_HANDOFF_PATH}) — no memory writes this session, gate not required.\n`;
 			} else {
 				handoffLine = `   Handoff verified (${SESSION_HANDOFF_PATH}, dated today).\n`;
+				// #82: the state file is overwritten wholesale, so the durable half is
+				// only as safe as the rewrite. Name a missing section rather than
+				// accepting an incomplete body silently — warn, never trap.
+				if (handoff.missingSections.length) {
+					handoffLine += `   Handoff INCOMPLETE — missing ${handoff.missingSections.join(", ")}. Carry the durable state forward in \`## Current state\`.\n`;
+				}
 			}
 
 			sessionMemoryRoot = null;

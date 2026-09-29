@@ -54,10 +54,11 @@ All file-based tools accept an optional `root` parameter to override the session
 
 ```
 ~/Projects/BTTN/.memory/
-└── reference/
-    ├── index.md
-    ├── status.md
-    └── strategy.md
+├── reference/
+│   ├── index.md
+│   └── strategy.md
+└── session/
+    └── latest.md      # the state file, written at /endwork
 ```
 
 **Organisation** — multi-project umbrellas share one `.memory/`:
@@ -65,16 +66,16 @@ All file-based tools accept an optional `root` parameter to override the session
 ```
 ~/DEV/Heaven/.memory/
 └── reference/
-    ├── index.md
+    ├── index.md       # registry — each row names the child's memory root
     ├── strategy.md
-    ├── heavencrm/status.md
-    ├── daily_hl/status.md
     └── ...
 ```
 
-Each sub-project gets an `AGENTS.md` (in its own repo) with a memory pointer telling agents where to load context.
+Each sub-project gets an `AGENTS.md` (in its own repo) with a memory pointer telling agents where to load context. A child with its own `.memory/` owns its own state; the org root holds the registry, not a second copy.
 
-**Canonical state files** (distinct purposes, never overlap): `reference/status.md` (durable project state), `wip.md` (in-flight scratch), `session/latest.md` (rolling handoff). Always full relative paths. Authoritative text in `prompts/system.md`.
+**Canonical state files** (distinct purposes, never overlap): `session/latest.md` (the state file — current state, decisions, open threads, next actions; overwritten each session, git holds the history) and `wip.md` (resume state — the exact commands and current blocker, minted when work starts and deleted when it lands). Always full relative paths. Authoritative text in `prompts/system.md`.
+
+`reference/status.md` retired 2026-09-29 (#82): its durable content now lives in `## Current state` at the top of `session/latest.md`. Do not create new ones; existing files are historical record.
 
 ## File Format
 
