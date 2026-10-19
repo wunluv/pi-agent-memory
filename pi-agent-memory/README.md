@@ -41,12 +41,33 @@ Zone C (Sessions)  .pi/sessions/                    Pi-managed, accessed via mem
 | `/agent:sync` | Manually sync active memory (Zone A, Zone B, or org root) |
 | `/agent:pull <uuid>` | Pull an agent's memory from the sync server |
 | `/memory:sync-config` | View or set sync config |
+| `/memory:audit [glob]` | Measure memory, write proposals for pruning it. Applies nothing |
+| `/memory:consolidate <proposals> [P1 …]` | Apply approved proposals, record the baseline |
+| `/memory:audit-check [glob]` | Re-measure after ~10 sessions: keep, kill or demote |
 
 ## Tools
 
-Seven tools registered: `memory_tree`, `memory_read`, `memory_write`, `memory_search`, `memory_recall`, `memory_sync_config`, plus `super_sessions_analyze` and `super_sessions_synthesize`.
+Eight tools registered: `memory_tree`, `memory_read`, `memory_write`, `memory_search`, `memory_recall`, `memory_status`, `memory_sync_config`, `memory_audit`, plus `super_sessions_analyze` and `super_sessions_synthesize`.
 
 All file-based tools accept an optional `root` parameter to override the session root.
+
+## Maintenance loop
+
+Memory only grows unless something measures and prunes it. `memory_audit` is free and
+read-only: cold-start tokens per project and per month, which memory files are actually
+read, Zone A files nobody ever fetched, repeated command signatures with their error
+counts, and how full the always-loaded budget is. It reads the session JSONL, so it needs
+no new storage.
+
+The cadence is derived, never stored: the last commit touching `project_insights/audit`
+and the session files dated after it. Due at 20 sessions or 30 days, surfaced in
+`memory_status` and as one line in the system prompt.
+
+```
+memory_audit → /memory:audit → (San approves) → /memory:consolidate → /memory:audit-check
+```
+
+See `AGENTS.md` § Maintenance loop and issue #92 for the design.
 
 ## Project Patterns
 

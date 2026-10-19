@@ -54,12 +54,17 @@ Pi loads this extension from `~/.pi/agent/extensions/pi-agent-memory` (symlinked
 
 ```
 pi-agent-memory/
-  index.ts              Extension entry: 7 tools, 15 commands, 2 hooks (+ 13 modules by concern)
+  index.ts              Extension entry: 8 tools, 18 commands, 2 hooks (+ 14 modules by concern)
   prompts/
     system.md           Memory system instructions injected into every turn
     startwork.md        /startwork ritual instructions
     endwork.md          /endwork ritual instructions
+    audit.md            /memory:audit — write proposals, apply nothing
+    consolidate.md      /memory:consolidate — apply approved, record baseline
+    audit-check.md      /memory:audit-check — keep / kill / demote
     init-memory.md      /memory:init prompt (future use)
+  scripts/
+    memory-audit.mjs    Measurement engine (#92). CLI + imported by audit.ts
     legacy/
       mem_system_prompt.md  Archived Letta-era protocol; canonical is prompts/system.md
   README.md             Quick start, architecture overview
@@ -101,7 +106,7 @@ Session workflow:
   /endwork → commit, clear sessionMemoryRoot
 ```
 
-## Tools (7)
+## Tools (8)
 
 | Tool | Resolves root via |
 |------|-------------------|
@@ -112,10 +117,11 @@ Session workflow:
 | `memory_status` | optional root param → session root → agent root |
 | `memory_sync_config` | (global config — get/set sync policy) |
 | `memory_recall` | (no root — searches Pi session JSONL) |
+| `memory_audit` | optional root param → session root → agent root (free, read-only) |
 | `super_sessions_analyze` | (separate extension) |
 | `super_sessions_synthesize` | (separate extension) |
 
-## Commands (15)
+## Commands (18)
 
 | Command | Namespace |
 |---------|-----------|
@@ -134,6 +140,35 @@ Session workflow:
 | `/memory:recall` | memory: |
 | `/memory:sync-config` | memory: |
 | `/memory:status` | memory: |
+| `/memory:audit [glob]` | memory: |
+| `/memory:consolidate <proposals> [P1 …]` | memory: |
+| `/memory:audit-check [glob]` | memory: |
+
+## Maintenance loop (#92)
+
+Memory only grows unless something measures and prunes it. Before this loop existed,
+cold start had gone from a 2.0K mean in April 2026 to 8.0K in October, and one audit had
+run in a month on one of twenty projects.
+
+```
+memory_audit (free)  ──▶  /memory:audit      proposals, applies nothing
+                              │ San approves by id
+                              ▼
+                          /memory:consolidate  one memory_write per proposal + BASELINE.md
+                              │ ~10 sessions later
+                              ▼
+                          /memory:audit-check  keep / kill / demote, written to CHECK.md
+```
+
+- **Measurement engine:** `scripts/memory-audit.mjs`. Session JSONL is the source: first-turn
+  `usage.input` gives the real cold start, `memory_read` calls give the read trail, bash
+  signatures give the rediscovery count. No model calls, no new storage (#34's sidecar is
+  redundant).
+- **Cadence:** derived, never stored. `audit.ts` reads the last commit touching
+  `project_insights/audit` and counts session files dated after it. Due at 20 sessions or 30
+  days; the notice appears in `memory_status` and as one line in the system prompt.
+- **Why a notice and not a cron:** a cron comments on nothing. The line reaches the model
+  inside the turn, and the model is the one who can run the loop.
 
 ## Extension Points (Phase 2 candidates)
 
@@ -148,7 +183,7 @@ These are intentionally absent in Phase 1. The methodology says grow by extensio
 
 - Node built-ins only (`fs`, `path`, `os`, `child_process`). Zero npm dependencies.
 - TypeBox for parameter schemas (pi SDK requirement)
-- TypeScript — entry `index.ts` + 13 modules by concern (sync, identity, discovery, paths, backlinks, session-search, search-sessions, ranked-search, context-budget, gitignore, handoff, status, project-lookup). Zero npm dependencies.
+- TypeScript — entry `index.ts` + 14 modules by concern (sync, identity, discovery, paths, backlinks, session-search, search-sessions, ranked-search, context-budget, gitignore, handoff, status, project-lookup, audit). Zero npm dependencies.
 - `memory_write` is always an atomic git commit
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage
