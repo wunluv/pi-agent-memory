@@ -202,6 +202,123 @@ export function nextId(rows: LedgerRow[], project: string, date: string): string
 	return prefix + String(max + 1).padStart(2, "0");
 }
 
+/**
+ * Today in the operator's own timezone.
+ *
+ * `toISOString()` answers in UTC, so a 01:00 SAST session stamped yesterday and
+ * a `check_after` set for "30 days" landed a day early. Small, but the ledger's
+ * whole value is that its dates mean what they say.
+ */
+export function todayLocal(now: Date = new Date()): string {
+	const shifted = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+	return shifted.toISOString().slice(0, 10);
+}
+
+/** The outcome of a ledger mutation: the new rows, or why it was refused. */
+export interface Mutation {
+	rows: LedgerRow[];
+	/** One line naming what happened, empty when nothing did. */
+	done: string;
+	/** Why nothing happened, when that is worth saying. */
+	error?: string;
+}
+
+const CHANGES_A_ROW: Status[] = ["approved", "installed", "checked-keep", "checked-rewrite", "checked-delete", "rejected", "superseded"];
+
+/**
+ * San names ids; this opens those rows.
+ *
+ * Two paths, and the second is the one a backfilled ledger needs: a row the
+ * audit already wrote as `proposed` is *promoted* in place, while a proposal
+ * that has never been seen before is appended. Refusing both would mean an
+ * approved id could never move, which is how the first version of this shipped.
+ */
+export function approveIds(
+	existing: LedgerRow[],
+	candidates: LedgerRow[],
+	ids: string[],
+	approver = "san",
+): Mutation {
+	const rows = existing.map((r) => ({ ...r }));
+	const opened: string[] = [];
+	const refused: string[] = [];
+
+	for (const id of ids) {
+		const row = rows.find((r) => r.id === id);
+		const candidate = candidates.find((c) => c.id === id);
+
+		if (row) {
+			if (row.status !== "proposed") {
+				refused.push(`${id} is already ${row.status}`);
+				continue;
+			}
+			// The audit owns the finding and its check; the candidate refreshes them
+			// when it carries any, so a re-audit can tighten a metric before approval.
+			if (candidate) {
+				for (const c of ["finding", "evidence", "home", "scope", "artifact", "check_metric", "check_definition", "check_after"] as Column[]) {
+					if (candidate[c]) row[c] = candidate[c];
+				}
+			}
+			row.status = "approved";
+			row.approved_by = approver;
+			opened.push(id);
+			continue;
+		}
+
+		if (!candidate) {
+			refused.push(`${id} is not in any proposals.tsv`);
+			continue;
+		}
+		const fresh = { ...candidate };
+		fresh.status = "approved";
+		fresh.approved_by = approver;
+		fresh.id = fresh.id || nextId(rows, "project", todayLocal());
+		rows.push(fresh);
+		opened.push(fresh.id);
+	}
+
+	if (refused.length) return { rows: existing, done: "", error: `Nothing approved:\n- ${refused.join("\n- ")}` };
+	if (!opened.length) return { rows: existing, done: "" };
+	return { rows, done: `approve ${opened.join(", ")}` };
+}
+
+/** The change was made: record what to look for and when to look. */
+export function installRow(
+	existing: LedgerRow[],
+	id: string,
+	opts: { artifact: string; commit?: string; date: string },
+): Mutation {
+	const rows = existing.map((r) => ({ ...r }));
+	const row = rows.find((r) => r.id === id);
+	if (!row) return { rows: existing, done: "", error: `No ledger row ${id}.` };
+	if (row.status !== "approved") {
+		return { rows: existing, done: "", error: `${id} is ${row.status}, not approved — nothing to install.` };
+	}
+	row.status = "installed";
+	row.installed_at = opts.date;
+	row.artifact = opts.artifact;
+	if (opts.commit) row.commit = opts.commit;
+	return { rows, done: `install ${id} (${opts.artifact})` };
+}
+
+/** The check ran: write the verdict, and the date it was reached. */
+export function closeRow(
+	existing: LedgerRow[],
+	id: string,
+	opts: { verdict: "keep" | "rewrite" | "delete"; note?: string; date: string },
+): Mutation {
+	const rows = existing.map((r) => ({ ...r }));
+	const row = rows.find((r) => r.id === id);
+	if (!row) return { rows: existing, done: "", error: `No ledger row ${id}.` };
+	if (row.status !== "installed") {
+		return { rows: existing, done: "", error: `${id} is ${row.status}, not installed — there is nothing to judge yet.` };
+	}
+	row.status = `checked-${opts.verdict}`;
+	row.verdict = opts.note || opts.verdict;
+	row.verdict_date = opts.date;
+	return { rows, done: `close ${id} (${opts.verdict})` };
+}
+
 /** Split a fenced TSV block into rows. Missing or ragged cells become "". */
 export function parseRows(text: string): LedgerRow[] {
 	const fence = /```tsv\r?\n([\s\S]*?)```/.exec(text);

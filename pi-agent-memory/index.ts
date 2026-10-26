@@ -36,13 +36,16 @@ import { AUDIT_DIR, dueNotice, gatherAuditState, projectDirFor, renderAuditLine,
 import {
 	COLUMNS,
 	emptyRow,
+	approveIds,
+	closeRow,
+	installRow,
 	ledgerFile,
 	ledgerLine,
-	nextId,
-	readLedgerRows,
 	openRows,
 	parseRows,
+	readLedgerRows,
 	renderLedger,
+	todayLocal,
 	validateRow,
 	type LedgerRow,
 } from "./ledger";
@@ -2395,7 +2398,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			// #100: the loop's unfinished work, reported by the command rather than by
 			// the model's memory of the ritual. Approved-but-uninstalled and overdue
 			// checks are the two ways a cycle stalls silently.
-			const openLedger = ledgerLine(readLedgerRows(root), new Date().toISOString().slice(0, 10));
+			const openLedger = ledgerLine(readLedgerRows(root), todayLocal());
 
 			ctx.ui.notify(
 				`\u2705 Session ended. Memory root cleared.\n` +
@@ -2723,7 +2726,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 
-			const today = new Date().toISOString().slice(0, 10);
+			const today = todayLocal();
 			const argv = args.trim().split(/\s+/).filter(Boolean);
 			const positional: string[] = [];
 			const flags = new Map<string, string>();
@@ -2737,14 +2740,10 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			}
 			const verb = positional.shift() ?? "list";
 			const flag = (name: string): string | null => flags.get(name) || null;
+			const say = (message: string) =>
+				ctx.ui.notify(message, /^(Ledger not written|Nothing|No ledger|No proposal)/.test(message) ? "warning" : "info");
 
-			const rows = (() => {
-				try {
-					return parseRows(fs.readFileSync(ledgerFile(root), "utf8"));
-				} catch {
-					return [] as LedgerRow[];
-				}
-			})();
+			const rows = readLedgerRows(root);
 
 			if (verb === "list") {
 				const open = openRows(rows);
@@ -2764,39 +2763,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					ctx.ui.notify("Usage: /learning approve <id...> — San names the ids he approves.", "warning");
 					return;
 				}
-				const candidates = findProposalRows(root);
-				const message = writeLedger(root, (existing) => {
-					const added: LedgerRow[] = [];
-					const missing: string[] = [];
-					for (const id of positional) {
-						if (existing.some((r) => r.id === id)) {
-							missing.push(`${id} (already in the ledger)`);
-							continue;
-						}
-						const found = candidates.find((c) => c.id === id);
-						if (!found) {
-							missing.push(id);
-							continue;
-						}
-						// Approval is San's word, recorded with his name, and it is the only
-						// status a row can enter on. The audit writes `proposed`; this opens it.
-						found.status = "approved";
-						found.approved_by = found.approved_by || "san";
-						if (!found.id) found.id = nextId(existing, projectNameForLedger(root), today);
-						added.push(found);
-					}
-					if (missing.length) {
-						return {
-							rows: existing,
-							done: "",
-							error:
-								`No proposal row for: ${missing.join(", ")}.\n` +
-								`An audit writes proposals.tsv into project_insights/audit-<date>/ first. /memory:audit does that.`,
-						};
-					}
-					return { rows: [...existing, ...added], done: `approve ${added.map((r) => r.id).join(", ")}` };
-				});
-				ctx.ui.notify(message || "Nothing to approve.", message.startsWith("Ledger not written") || message.startsWith("No proposal") ? "warning" : "info");
+				say(writeLedger(root, (existing) => approveIds(existing, findProposalRows(root), positional)));
 				return;
 			}
 
@@ -2812,17 +2779,8 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					ctx.ui.notify("Usage: /learning install <id> --artifact <skill-name|prompt-name|script-path>", "warning");
 					return;
 				}
-				const sha = flag("commit") || (git(["rev-parse", "--short", "HEAD"], root).stdout || "").trim();
-				const message = writeLedger(root, (existing) => {
-					const row = existing.find((r) => r.id === id);
-					if (!row) return { rows: existing, done: "", error: `No ledger row ${id}.` };
-					row.status = "installed";
-					row.installed_at = today;
-					row.artifact = artifact;
-					row.commit = sha;
-					return { rows: existing, done: `install ${id} (${artifact})` };
-				});
-				ctx.ui.notify(message, message.startsWith("Ledger not written") || message.startsWith("No ledger") ? "warning" : "info");
+				const commit = flag("commit") || (git(["rev-parse", "--short", "HEAD"], root).stdout || "").trim();
+				say(writeLedger(root, (existing) => installRow(existing, id, { artifact, commit, date: today })));
 				return;
 			}
 
@@ -2832,16 +2790,15 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 					ctx.ui.notify("Usage: /learning close <id> --verdict keep|rewrite|delete [--note \"why\"]", "warning");
 					return;
 				}
-				const note = flag("note") || verdict;
-				const message = writeLedger(root, (existing) => {
-					const row = existing.find((r) => r.id === id);
-					if (!row) return { rows: existing, done: "", error: `No ledger row ${id}.` };
-					row.status = `checked-${verdict}`;
-					row.verdict = note;
-					row.verdict_date = today;
-					return { rows: existing, done: `close ${id} (${verdict})` };
-				});
-				ctx.ui.notify(message, message.startsWith("Ledger not written") || message.startsWith("No ledger") ? "warning" : "info");
+				say(
+					writeLedger(root, (existing) =>
+						closeRow(existing, id, {
+							verdict: verdict as "keep" | "rewrite" | "delete",
+							note: flag("note") || undefined,
+							date: today,
+						}),
+					),
+				);
 				return;
 			}
 

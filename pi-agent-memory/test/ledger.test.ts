@@ -11,14 +11,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	COLUMNS,
+	approveIds,
+	closeRow,
 	dueRows,
 	emptyRow,
+	installRow,
 	ledgerLine,
 	nextId,
 	openRows,
 	parseRows,
 	readLedgerRows,
 	renderLedger,
+	todayLocal,
 	validateRow,
 	type LedgerRow,
 } from "../ledger.ts";
@@ -144,6 +148,50 @@ function row(over: Partial<LedgerRow> = {}): LedgerRow {
 	assert.equal(ledgerLine([done, rejected], "2026-12-09"), null, "a quiet ledger says nothing");
 	assert.match(ledgerLine(rows, "2026-12-09") ?? "", /1 approved but not installed \(a-1\)/);
 	assert.match(ledgerLine(rows, "2026-12-09") ?? "", /1 check overdue \(i-1\)/);
+}
+
+// ─── moving a row: approve, install, close ─────────────────────────────────
+
+{
+	// Regression: a row the audit already wrote as `proposed` must be promoted in
+	// place. The first version refused every id already in the ledger, which made
+	// every backfilled row unapprovable.
+	const proposed = row({ id: "p-1", status: "proposed", approved_by: "", check_metric: "", check_definition: "", check_after: "" });
+	const candidate = row({ id: "p-1", status: "proposed" });
+
+	const promoted = approveIds([proposed], [candidate], ["p-1"]);
+	assert.equal(promoted.error, undefined, promoted.error);
+	assert.equal(promoted.rows[0].status, "approved");
+	assert.equal(promoted.rows[0].approved_by, "san");
+	assert.equal(promoted.rows[0].check_metric, "failed_inline_script_calls", "the candidate supplies the check");
+	assert.deepEqual(validateRow(promoted.rows[0], []), [], "and the promoted row is valid");
+
+	// A proposal never seen before is appended.
+	const appended = approveIds([], [candidate], ["p-1"]);
+	assert.equal(appended.rows.length, 1);
+	assert.equal(appended.rows[0].status, "approved");
+
+	// Anything already past `proposed` is refused, by name.
+	assert.match(approveIds([row({ id: "p-1", status: "installed", installed_at: "2026-11-02", artifact: "x" })], [], ["p-1"]).error ?? "", /p-1 is already installed/);
+	assert.match(approveIds([], [], ["nope"]).error ?? "", /nope is not in any proposals.tsv/);
+	assert.equal(approveIds([proposed], [candidate], ["p-1"]).rows[0].status, "approved", "the input rows are not mutated");
+
+	// install and close walk the status ladder and refuse to skip it.
+	const installed = installRow(promoted.rows, "p-1", { artifact: "scratch-scripts", commit: "abc1234", date: "2026-11-02" });
+	assert.equal(installed.rows[0].status, "installed");
+	assert.equal(installed.rows[0].installed_at, "2026-11-02");
+	assert.match(installRow([proposed], "p-1", { artifact: "x", date: "2026-11-02" }).error ?? "", /is proposed, not approved/);
+
+	const closed = closeRow(installed.rows, "p-1", { verdict: "keep", note: "4.1 to 1.2 per 100 bash calls", date: "2026-12-04" });
+	assert.equal(closed.rows[0].status, "checked-keep");
+	assert.equal(closed.rows[0].verdict, "4.1 to 1.2 per 100 bash calls");
+	assert.equal(closed.rows[0].verdict_date, "2026-12-04");
+	assert.deepEqual(validateRow(closed.rows[0], []), [], "a closed row is valid");
+	assert.match(closeRow([proposed], "p-1", { verdict: "keep", date: "2026-12-04" }).error ?? "", /is proposed, not installed/);
+	assert.match(closeRow([], "gone", { verdict: "keep", date: "2026-12-04" }).error ?? "", /No ledger row gone/);
+
+	// Local dates: a 01:00 SAST session belongs to that day, not to UTC's yesterday.
+	assert.equal(todayLocal(new Date("2026-11-02T23:00:00Z")), "2026-11-03", "SAST is UTC+2");
 }
 
 // ─── reading a root with no ledger ──────────────────────────────────────────

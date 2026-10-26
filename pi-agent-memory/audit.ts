@@ -21,7 +21,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GitFn } from "./identity.ts";
-import { LEDGER_PATH, dueRows, readLedgerRows } from "./ledger.ts";
+import { LEDGER_PATH, dueRows, readLedgerRows, todayLocal } from "./ledger.ts";
 
 /** Where audit artifacts live, relative to the memory root, for project roots. */
 export const AUDIT_DIR = "project_insights/audit";
@@ -136,7 +136,9 @@ export function gatherAuditState(opts: {
 	dueDays?: number;
 }): AuditState {
 	const root = opts.root;
-	const today = opts.today || new Date().toISOString().slice(0, 10);
+	// Local, not UTC: a 01:00 SAST session is yesterday in UTC, and the ledger's
+	// check dates have to mean the operator's day.
+	const today = opts.today || todayLocal();
 
 	// The ledger is the clock once a project has one (#100). Until then, the audit
 	// directory stands in, so a project that never opened a row still gets nudged.
@@ -189,9 +191,12 @@ export function renderAuditLine(state: AuditState): string {
 /** The notice injected into the system prompt when due. One line, ~20 tokens. */
 export function dueNotice(state: AuditState): string | null {
 	if (!state.due) return null;
+	// Two paths, and both stay named: pruning (delete, merge, move) is applied by
+	// /memory:consolidate and judged by /memory:audit-check, while a fix is opened,
+	// installed and closed through /learning. Naming only one loses the other.
 	const ledger = state.overdue.length
 		? `Close the loop with /learning: the check you pre-registered has come due.`
-		: `The loop: /memory:audit writes proposals, /learning approve opens the ones San names, /learning close records the verdict.`;
+		: `The loop: /memory:audit writes proposals, /learning approve opens the ones San names, /memory:consolidate applies them, /learning close records the verdict.`;
 	return (
 		`**Memory audit due** — ${state.reason}. ` +
 		`${ledger} ` +
