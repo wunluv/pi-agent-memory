@@ -57,8 +57,8 @@ const ALL_DOCS = [
 const WHITELIST: Array<{ file: string; line: string; reason: string }> = [
   {
     file: path.join(REPO_ROOT, "AGENTS.md"),
-    line: "WBS.md                Work breakdown structure",
-    reason: "docs/WBS.md repo doc in the Files map, not a memory path",
+    line: "`docs/DATA-MODEL.md`, `docs/EXPLAINED.md`, `docs/WBS.md`, `docs/IMPROVEMENT-DRAFTS.md`. Canonical spec:",
+    reason: "docs/WBS.md repo doc in the Files pointer paragraph, not a memory path (line moved by audit P2, re-justified 2026-10-23)",
   },
 ];
 
