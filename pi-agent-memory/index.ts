@@ -34,6 +34,19 @@ import {
 } from "./context-budget";
 import { AUDIT_DIR, dueNotice, gatherAuditState, projectDirFor, renderAuditLine, type AuditState } from "./audit";
 import {
+	COLUMNS,
+	emptyRow,
+	ledgerFile,
+	ledgerLine,
+	nextId,
+	readLedgerRows,
+	openRows,
+	parseRows,
+	renderLedger,
+	validateRow,
+	type LedgerRow,
+} from "./ledger";
+import {
 	configureRepoAuthor,
 	ensureAgentIdentity,
 	ensureProjectUuid,
@@ -2379,12 +2392,18 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				: `   Closed the project root discovered at session start (no /startwork this session):\n   ${root}\n`;
 			const drift = scopeDriftNotice(root, process.cwd());
 
+			// #100: the loop's unfinished work, reported by the command rather than by
+			// the model's memory of the ritual. Approved-but-uninstalled and overdue
+			// checks are the two ways a cycle stalls silently.
+			const openLedger = ledgerLine(readLedgerRows(root), new Date().toISOString().slice(0, 10));
+
 			ctx.ui.notify(
 				`\u2705 Session ended. Memory root cleared.\n` +
 				commitInfo +
 				handoffLine +
 				scopeLine +
 				(drift ? `   ${drift}\n` : "") +
+				(openLedger ? `   ${openLedger}\n` : "") +
 				`   Remember to run super_sessions weekly for extraction.`,
 				"success",
 			);
@@ -2606,6 +2625,227 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			);
 			ctx.ui.notify(`Tables: ${measured.tables ?? "not written"}`, "info");
 			await pi.sendUserMessage(template.replace("{{SUMMARY}}", measured.summary));
+		},
+	});
+
+	// ─── The adoption ledger (#100) ────────────────────────────────────────────
+	//
+	// The loop's weakest link was never analysis. It was the step from a report to
+	// a durable, enumerable, checkable change: nothing recorded which finding
+	// became which change, so a declined proposal returned unchanged, an installed
+	// fix could not be listed for removal, and verification never ran once.
+	//
+	// These four verbs are the only writers. `/learning approve` refuses a row
+	// whose check is not already written down, which is the whole difference
+	// between verification and a story told afterwards.
+
+	/** The project a memory root belongs to, as a name and an id prefix. */
+	function projectNameForLedger(root: string): string {
+		const dir = projectDirFor(root);
+		return path.basename(dir ?? root) || "project";
+	}
+
+	/** Candidate rows an audit wrote, newest audit directory first. */
+	function findProposalRows(root: string): LedgerRow[] {
+		const insights = path.join(root, "project_insights");
+		let dirs: string[] = [];
+		try {
+			dirs = fs
+				.readdirSync(insights, { withFileTypes: true })
+				.filter((e) => e.isDirectory() && e.name.startsWith("audit"))
+				.map((e) => e.name)
+				.sort()
+				.reverse();
+		} catch {
+			return [];
+		}
+		const rows: LedgerRow[] = [];
+		for (const dir of dirs) {
+			const file = path.join(insights, dir, "proposals.tsv");
+			if (!fs.existsSync(file)) continue;
+			try {
+				// The audit writes bare TSV with a header row; parseRows wants it fenced.
+				rows.push(...parseRows("```tsv\n" + fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim() + "\n```"));
+			} catch {
+				continue;
+			}
+		}
+		return rows;
+	}
+
+	/**
+	 * Read, mutate, validate, write, commit.
+	 *
+	 * `done` empty means nothing changed and nothing is written. `error` means the
+	 * change is refused. Validation covers the whole file, so a hand edit that
+	 * breaks an old row is caught at the next write rather than at check time.
+	 */
+	function writeLedger(
+		root: string,
+		mutate: (rows: LedgerRow[]) => { rows: LedgerRow[]; done: string; error?: string },
+	): string {
+		const file = ledgerFile(root);
+		let existing: LedgerRow[] = [];
+		try {
+			existing = parseRows(fs.readFileSync(file, "utf8"));
+		} catch {
+			existing = [];
+		}
+		const out = mutate(existing);
+		if (out.error) return out.error;
+		if (!out.done) return "";
+		const errors = out.rows.flatMap((r) => validateRow(r, out.rows.filter((o) => o !== r)));
+		if (errors.length) {
+			// The refusal is the feature: a row cannot be approved without the number
+			// that will later judge it. Say how to fix it, or the refusal reads as a bug.
+			const hint = errors.some((e) => /^(check_metric|check_definition|check_after)/.test(e))
+				? "\nA row cannot be approved without its check. Add check_metric, check_definition and check_after to the proposal's row in proposals.tsv, then approve again."
+				: "";
+			return `Ledger not written:\n- ${errors.join("\n- ")}${hint}`;
+		}
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, renderLedger(out.rows, projectNameForLedger(root)));
+		gitCommit(file, `learning: ${out.done}`, root);
+		return `Ledger: ${out.done}. ${path.relative(root, file)}`;
+	}
+
+	pi.registerCommand("learning", {
+		description:
+			"The adoption ledger: which finding became which change. Usage: /learning [approve <ids...> | install <id> --artifact <name> | close <id> --verdict keep|rewrite|delete]",
+		handler: async (args, ctx) => {
+			const root = resolveMemoryRoot();
+			if (!root) {
+				ctx.ui.notify("No memory root. Use /startwork first.", "warning");
+				return;
+			}
+			if (!projectDirFor(root)) {
+				ctx.ui.notify("The ledger is per project. Run this inside a project's .memory root.", "warning");
+				return;
+			}
+
+			const today = new Date().toISOString().slice(0, 10);
+			const argv = args.trim().split(/\s+/).filter(Boolean);
+			const positional: string[] = [];
+			const flags = new Map<string, string>();
+			for (let i = 0; i < argv.length; i++) {
+				if (argv[i].startsWith("--")) {
+					flags.set(argv[i].slice(2), argv[i + 1] ?? "");
+					i++;
+				} else {
+					positional.push(argv[i]);
+				}
+			}
+			const verb = positional.shift() ?? "list";
+			const flag = (name: string): string | null => flags.get(name) || null;
+
+			const rows = (() => {
+				try {
+					return parseRows(fs.readFileSync(ledgerFile(root), "utf8"));
+				} catch {
+					return [] as LedgerRow[];
+				}
+			})();
+
+			if (verb === "list") {
+				const open = openRows(rows);
+				if (!open.length) {
+					ctx.ui.notify(`${projectNameForLedger(root)}: nothing open in the ledger.`, "info");
+					return;
+				}
+				ctx.ui.notify(
+					open.map((r) => `${r.id}  ${r.status}  ${r.finding}  (check ${r.check_after || "—"})`).join("\n"),
+					"info",
+				);
+				return;
+			}
+
+			if (verb === "approve") {
+				if (!positional.length) {
+					ctx.ui.notify("Usage: /learning approve <id...> — San names the ids he approves.", "warning");
+					return;
+				}
+				const candidates = findProposalRows(root);
+				const message = writeLedger(root, (existing) => {
+					const added: LedgerRow[] = [];
+					const missing: string[] = [];
+					for (const id of positional) {
+						if (existing.some((r) => r.id === id)) {
+							missing.push(`${id} (already in the ledger)`);
+							continue;
+						}
+						const found = candidates.find((c) => c.id === id);
+						if (!found) {
+							missing.push(id);
+							continue;
+						}
+						// Approval is San's word, recorded with his name, and it is the only
+						// status a row can enter on. The audit writes `proposed`; this opens it.
+						found.status = "approved";
+						found.approved_by = found.approved_by || "san";
+						if (!found.id) found.id = nextId(existing, projectNameForLedger(root), today);
+						added.push(found);
+					}
+					if (missing.length) {
+						return {
+							rows: existing,
+							done: "",
+							error:
+								`No proposal row for: ${missing.join(", ")}.\n` +
+								`An audit writes proposals.tsv into project_insights/audit-<date>/ first. /memory:audit does that.`,
+						};
+					}
+					return { rows: [...existing, ...added], done: `approve ${added.map((r) => r.id).join(", ")}` };
+				});
+				ctx.ui.notify(message || "Nothing to approve.", message.startsWith("Ledger not written") || message.startsWith("No proposal") ? "warning" : "info");
+				return;
+			}
+
+			const id = positional[0];
+			if (!id) {
+				ctx.ui.notify(`Usage: /learning ${verb} <id>`, "warning");
+				return;
+			}
+
+			if (verb === "install") {
+				const artifact = flag("artifact");
+				if (!artifact) {
+					ctx.ui.notify("Usage: /learning install <id> --artifact <skill-name|prompt-name|script-path>", "warning");
+					return;
+				}
+				const sha = flag("commit") || (git(["rev-parse", "--short", "HEAD"], root).stdout || "").trim();
+				const message = writeLedger(root, (existing) => {
+					const row = existing.find((r) => r.id === id);
+					if (!row) return { rows: existing, done: "", error: `No ledger row ${id}.` };
+					row.status = "installed";
+					row.installed_at = today;
+					row.artifact = artifact;
+					row.commit = sha;
+					return { rows: existing, done: `install ${id} (${artifact})` };
+				});
+				ctx.ui.notify(message, message.startsWith("Ledger not written") || message.startsWith("No ledger") ? "warning" : "info");
+				return;
+			}
+
+			if (verb === "close") {
+				const verdict = (flag("verdict") || "").toLowerCase();
+				if (!["keep", "rewrite", "delete"].includes(verdict)) {
+					ctx.ui.notify("Usage: /learning close <id> --verdict keep|rewrite|delete [--note \"why\"]", "warning");
+					return;
+				}
+				const note = flag("note") || verdict;
+				const message = writeLedger(root, (existing) => {
+					const row = existing.find((r) => r.id === id);
+					if (!row) return { rows: existing, done: "", error: `No ledger row ${id}.` };
+					row.status = `checked-${verdict}`;
+					row.verdict = note;
+					row.verdict_date = today;
+					return { rows: existing, done: `close ${id} (${verdict})` };
+				});
+				ctx.ui.notify(message, message.startsWith("Ledger not written") || message.startsWith("No ledger") ? "warning" : "info");
+				return;
+			}
+
+			ctx.ui.notify(`Unknown: /learning ${verb}. Try approve, install, close or list.`, "warning");
 		},
 	});
 

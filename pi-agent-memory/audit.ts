@@ -21,6 +21,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GitFn } from "./identity.ts";
+import { LEDGER_PATH, dueRows, readLedgerRows } from "./ledger.ts";
 
 /** Where audit artifacts live, relative to the memory root, for project roots. */
 export const AUDIT_DIR = "project_insights/audit";
@@ -31,13 +32,26 @@ export const DUE_DAYS = Number(process.env.PI_MEMORY_AUDIT_DAYS || 30);
 
 export interface AuditState {
 	root: string;
-	/** Date (YYYY-MM-DD) of the last commit that touched the audit dir. */
+	/** Date (YYYY-MM-DD) of the last commit that touched the audit dir, or the ledger. */
 	last: string | null;
 	daysSince: number | null;
 	sessionsSince: number;
 	due: boolean;
 	/** Plain-language reason, empty when not due. */
 	reason: string;
+	/**
+	 * #100: which clock `last` came from. The ledger is authoritative once a
+	 * project has one; the audit directory is the fallback for a project that has
+	 * not opened a row yet. They are not interchangeable: the friction loop writes
+	 * into `project_insights/audit`, so keying the memory clock on that directory
+	 * let a friction `endwork` reset it (d5 reported "last audit 2026-09-22", a
+	 * friction commit).
+	 */
+	clock: "ledger" | "audit";
+	/** Ids whose pre-registered check date has arrived (#100 stage 6). */
+	overdue: string[];
+	/** Ids approved but not yet installed: nothing is in the tree for them. */
+	awaitingInstall: string[];
 }
 
 /**
@@ -56,7 +70,12 @@ export function projectDirFor(root: string): string | null {
 
 /** Date of the last commit touching the audit dir, or null if never. */
 export function lastAuditDate(git: GitFn, root: string): string | null {
-	const r = git(["log", "-1", "--format=%cs", "--", AUDIT_DIR], root);
+	return lastCommitDate(git, root, AUDIT_DIR);
+}
+
+/** Date of the last commit touching `relPath`, or null if never. */
+export function lastCommitDate(git: GitFn, root: string, relPath: string): string | null {
+	const r = git(["log", "-1", "--format=%cs", "--", relPath], root);
 	if (r.code !== 0) return null;
 	const date = (r.stdout || "").trim().split("\n")[0] || "";
 	return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
@@ -117,8 +136,17 @@ export function gatherAuditState(opts: {
 	dueDays?: number;
 }): AuditState {
 	const root = opts.root;
-	const last = lastAuditDate(opts.git, root);
 	const today = opts.today || new Date().toISOString().slice(0, 10);
+
+	// The ledger is the clock once a project has one (#100). Until then, the audit
+	// directory stands in, so a project that never opened a row still gets nudged.
+	const ledgerLast = lastCommitDate(opts.git, root, LEDGER_PATH);
+	const clock: "ledger" | "audit" = ledgerLast ? "ledger" : "audit";
+	const last = ledgerLast ?? lastAuditDate(opts.git, root);
+	const ledgerRows = readLedgerRows(root);
+	const overdue = dueRows(ledgerRows, today).map((r) => r.id);
+	const awaitingInstall = ledgerRows.filter((r) => r.status === "approved").map((r) => r.id);
+
 	const cwd = projectDirFor(root);
 	const since = countSessionsSince(opts.sessionsRoot, cwd, last);
 	const days = last ? daysBetween(last, today) : null;
@@ -128,7 +156,12 @@ export function gatherAuditState(opts: {
 
 	let due = false;
 	let reason = "";
-	if (!last) {
+	if (overdue.length) {
+		// A pre-registered check that has come due is the strongest signal there is:
+		// someone already agreed the change would be measured by now.
+		due = true;
+		reason = `${overdue.length} check${overdue.length === 1 ? "" : "s"} overdue (${overdue.join(", ")})`;
+	} else if (!last) {
 		due = true;
 		reason = "no audit recorded";
 	} else if (since >= dueSessions) {
@@ -139,22 +172,29 @@ export function gatherAuditState(opts: {
 		reason = `${days} days since ${last}`;
 	}
 
-	return { root, last, daysSince: days, sessionsSince: since, due, reason };
+	return { root, last, daysSince: days, sessionsSince: since, due, reason, clock, overdue, awaitingInstall };
 }
 
 /** One line for `memory_status`. Never empty: silence is what failed before. */
 export function renderAuditLine(state: AuditState): string {
 	const when = state.last ? `last audit ${state.last} (${state.daysSince}d ago)` : "never audited";
-	if (state.due) return `Audit: DUE — ${state.reason}; ${when}. Run /memory:audit`;
-	return `Audit: ok — ${state.sessionsSince} sessions since the last one (${when}); due at ${DUE_SESSIONS} sessions or ${DUE_DAYS} days`;
+	const from = state.clock === "ledger" ? ", clocked on the ledger" : "";
+	const waiting = state.awaitingInstall.length
+		? ` ${state.awaitingInstall.length} approved but not installed (${state.awaitingInstall.join(", ")}).`
+		: "";
+	if (state.due) return `Audit: DUE — ${state.reason}; ${when}${from}. Run /memory:audit or /learning list${waiting}`;
+	return `Audit: ok — ${state.sessionsSince} sessions since the last one (${when}${from}); due at ${DUE_SESSIONS} sessions or ${DUE_DAYS} days.${waiting}`;
 }
 
 /** The notice injected into the system prompt when due. One line, ~20 tokens. */
 export function dueNotice(state: AuditState): string | null {
 	if (!state.due) return null;
+	const ledger = state.overdue.length
+		? `Close the loop with /learning: the check you pre-registered has come due.`
+		: `The loop: /memory:audit writes proposals, /learning approve opens the ones San names, /learning close records the verdict.`;
 	return (
 		`**Memory audit due** — ${state.reason}. ` +
-		`The loop: /memory:audit writes proposals, /memory:consolidate applies approved ones and records a baseline, ` +
-		`/memory:audit-check compares after ~10 sessions. Mention it once if the session has room; do not derail the task.`
+		`${ledger} ` +
+		`Mention it once if the session has room; do not derail the task.`
 	);
 }
