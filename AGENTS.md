@@ -2,6 +2,11 @@
 
 > Three-zone git-backed markdown memory system for pi agents. TypeScript · Node built-ins · TypeBox.
 
+This file is the contract, not the manual. It is injected into every session in this repo, so it
+carries only what shapes a decision on the first turn. Architecture, the tool surface, the module
+map, gotchas and the maintenance loop live in `docs/TECHNICAL.md` — read the section you need rather
+than keeping it in view. `## Where things live` is the index.
+
 ## Engineering Values
 
 1. DATA BEFORE CODE — Understand entities, relationships, invariants first. Code is downstream.
@@ -32,7 +37,7 @@ Issue-driven. Every change starts as a GitHub issue (template in `.github/ISSUE_
 6. **Deploy:** this extension is consumed via symlink (`~/.pi/agent/extensions/pi-agent-memory` → this tree), so the working tree IS the live code; changes take effect on next pi restart
 7. **Close issue** explicitly, last: `gh issue close <n> -c "Fixed in <short-hash>. Verified: <test result>"`
 
-Closing is always explicit and the final step. Never use closing keywords in commits or PRs — they auto-close on push/merge, which is silent and drops the verification record.
+Closing is explicit and last — no closing keywords, so the verification record survives.
 
 ## Session Start
 
@@ -40,15 +45,6 @@ Closing is always explicit and the final step. Never use closing keywords in com
 2. Load `.memory/wip.md` if exists
 3. Load project state: `memory_read("session/latest.md", root="~/DEV/pi/agent_memory/.memory")`
 4. Summarize: pending changes, WIP state, next action
-
-## Entry Points
-
-```
-pi-agent-memory/index.ts    # Extension entry — registerTools, registerCommands, lifecycle hooks
-pi-agent-memory/prompts/    # Prompt templates loaded at runtime with file-based fallback
-```
-
-Pi loads this extension from `~/.pi/agent/extensions/pi-agent-memory` (symlinked to this directory).
 
 ## Files
 
@@ -63,91 +59,34 @@ Repo tree, module map and what each module owns: `docs/TECHNICAL.md` §9. Design
 decisions, next actions), `wip.md` is in-flight scratch that survives a restart, and `reference/` holds
 everything else.
 
-## Architecture
+## Where things live
 
-```
-Zone A (Agent)     ~/.pi/agents/<agent>/memory/     Always in context (system/ files)
-Zone B (Project)   <project>/.memory/               Session-scoped via /startwork
-Zone C (Sessions)  .pi/sessions/                    Pi-managed, via memory_recall/super_sessions
-```
-
-**Terminology — zones vs buckets.** Zones A/B/C are lifecycle layers (always-injected / session-scoped / archive). The org root `~/.pi/org/` (shared registry + role library) is a fourth, orthogonal store — not "Zone D". SPEC_v4's "buckets" (`system/`, `knowledge/`, `<project>/.memory/`, `~/.pi/org/`) name the same layers by content: Zone A holds `system/` + `knowledge/` + a thin `projects/` index. The two vocabularies are aliases, not competing models.
-
-```
-before_agent_start hook
-  → buildSystemContext()
-  → inject system/*.md into system prompt (~850 tokens)
-  → all other content loaded on demand via tools
-
-Session workflow:
-  /startwork → sessionMemoryRoot = <project>/.memory/
-  All memory_read/memory_write/memory_search → resolveMemoryRoot()
-  /endwork → commit, clear sessionMemoryRoot
-```
-
-## Tools and commands
-
-Eight tools, eighteen commands, two hooks. The tables, the root-resolution chain, the `system/` write
-guard and the hook behaviour are in `docs/TECHNICAL.md` §6. Two surfaces matter here day to day: the
-canonical state filenames in `## Rules`, and the maintenance loop below.
-
-## Maintenance loop (#92)
-
-Memory only grows unless something measures and prunes it. Before this loop existed,
-cold start had gone from a 2.0K mean in April 2026 to 8.0K in October, and one audit had
-run in a month on one of twenty projects.
-
-```
-memory_audit (free)  ──▶  /memory:audit      proposals, applies nothing
-                              │ San approves by id
-                              ▼
-                          /memory:consolidate  one memory_write per proposal + BASELINE.md
-                              │ ~10 sessions later
-                              ▼
-                          /memory:audit-check  keep / kill / demote, written to CHECK.md
-```
-
-- **Measurement engine:** `scripts/memory-audit.mjs`. Session JSONL is the source: first-turn
-  `usage.input` gives the real cold start, `memory_read` calls give the read trail, bash
-  signatures give the rediscovery count. No model calls, no new storage (#34's sidecar is
-  redundant).
-- **Cadence:** derived, never stored. `audit.ts` reads the last commit touching
-  `project_insights/audit` and counts session files dated after it. Due at 20 sessions or 30
-  days; the notice appears in `memory_status` and as one line in the system prompt.
-- **Why a notice and not a cron:** a cron comments on nothing. The line reaches the model
-  inside the turn, and the model is the one who can run the loop.
-
-## Extension Points (Phase 2 candidates)
-
-Four hooks are absent in Phase 1 by design, so Phase 2 extends rather than modifies: `beforeMemoryWrite`,
-`afterMemoryCommit`, a `resolveMemoryRoot` plugin, and an archival storage backend. What each would take:
-`docs/IMPROVEMENT-DRAFTS.md` §6.
+| To learn | Read |
+|---|---|
+| Zones, resolution order, the `before_agent_start` hook | `docs/TECHNICAL.md` §2 |
+| Tool and command surface, root chain, `system/` write guard | §6 |
+| Write path | §7 |
+| Session lifecycle | §8 |
+| Module map, repository layout | §9 |
+| Known gaps | §10 |
+| Maintenance loop (#92): audit → consolidate → audit-check | §12 |
+| Gotchas | §13 |
+| Phase 2 extension points | `docs/IMPROVEMENT-DRAFTS.md` §6 |
 
 ## Rules
 
-- Node built-ins only (`fs`, `path`, `os`, `child_process`). Zero npm dependencies.
-- TypeBox for parameter schemas (pi SDK requirement)
-- TypeScript — entry `index.ts` + 14 modules by concern (sync, identity, discovery, paths, backlinks, session-search, search-sessions, ranked-search, context-budget, gitignore, handoff, status, project-lookup, audit). Zero npm dependencies.
-- `memory_write` is always an atomic git commit
-- Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
-- Session root cleared on session_start hook — no cross-session leakage
-- `~` in root params expanded to home directory
-- Canonical state files — `session/latest.md` (the state file: current state, decisions, open threads, next actions) and `wip.md` (resume state: exact commands, current blocker) — distinct purposes, never overlap. `reference/status.md` retired 2026-09-29 (#82); its durable content moved into `## Current state` at the top of `session/latest.md`. Authoritative text in `pi-agent-memory/prompts/system.md`.
+- Node built-ins only (`fs`, `path`, `os`, `child_process`). Zero npm dependencies. TypeBox for parameter schemas (pi SDK requirement).
+- `memory_write` is always an atomic git commit.
+- Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo (#17).
+- Canonical state files — `session/latest.md` (the state file: current state, decisions, open threads, next actions) and `wip.md` (resume state: exact commands, current blocker) — distinct purposes, never overlap. `reference/status.md` retired (#82); its durable content is `## Current state`. Authoritative text in `pi-agent-memory/prompts/system.md`.
+- Session root cleared on `session_start` hook — no cross-session leakage. `~` in root params is expanded to the home directory.
+- The symlink is the deployment: `~/.pi/agent/extensions/pi-agent-memory` → this tree, so the working tree is live code and changes land on the next pi restart. It must exist before pi starts.
 
 ## Procedures
 
 - **Inline scripts break on quoting more often than they work.** A quoted `node -e "` failed 117 times
   across 87 sessions and `python3 - <<EOF` 72 times across 111 (`memory_audit`, 2026-10-23). Use the
   shapes in `.memory/reference/procedures/inline-scripts.md` before writing one.
-
-## Gotchas
-
-- `memory_write` auto-initializes git if no repo exists at the resolved root
-- `parseFrontmatter` only handles simple YAML (description, importance, tags, created, updated). Nested structures ignored.
-- `buildTreeView` walks directories recursively — large memory trees can be slow. Progressive disclosure is the user's responsibility.
-- `memory_recall` is BM25-ranked with importance/recency boosts (#42); tolerant of malformed JSONL lines; bounded excerpts.
-- The extension is split by concern into modules (index.ts + 9); `index.ts` remains the only file with tool/command registration.
-- Pi loads the extension by reading `index.ts` from the symlink target. The symlink must exist before Pi starts.
 
 ## Sibling Projects
 
@@ -158,4 +97,3 @@ Four hooks are absent in Phase 1 by design, so Phase 2 extends rather than modif
 ## Communication
 - when referencing github issues include subject/title example:  Closed #62 (briefly describe issue subject here)
 - be explicit when describing things. example:  and is waiting on nothing but a slot (say what this slot is?).
-

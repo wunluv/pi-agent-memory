@@ -30,6 +30,24 @@ Resolution order for all file tools: explicit `root` param → session root →
 auto-discovered nearest `.memory/` (walk-up from cwd, bounded at `~/.pi`) →
 agent root (Zone A).
 
+```
+before_agent_start hook
+  → buildSystemContext()
+  → inject system/*.md into system prompt (~850 tokens)
+  → all other content loaded on demand via tools
+
+Session workflow:
+  /startwork → sessionMemoryRoot = <project>/.memory/
+  All memory_read/memory_write/memory_search → resolveMemoryRoot()
+  /endwork → commit, clear sessionMemoryRoot
+```
+
+**Terminology — zones vs buckets.** Zones A/B/C are lifecycle layers (always-injected /
+session-scoped / archive). The org root `~/.pi/org/` (shared registry + role library) is a
+fourth, orthogonal store — not "Zone D". SPEC_v4's "buckets" (`system/`, `knowledge/`,
+`<project>/.memory/`, `~/.pi/org/`) name the same layers by content: Zone A holds `system/` +
+`knowledge/` + a thin `projects/` index. The two vocabularies are aliases, not competing models.
+
 ## 3. Entities
 
 | Entity | Identity | Identity file | Location |
@@ -246,3 +264,43 @@ prompts/           system.md (injected every turn), startwork, endwork, audit,
 | Gated write | A registry write at a transition (register, move, promote), human-approved |
 | Derived remote | URL computed from `server_url`, never user-managed |
 | Spine | The pinned `system/` files always injected into context (#36) |
+
+## 12. Maintenance loop (#92)
+
+Memory only grows unless something measures and prunes it. Before this loop existed, cold
+start had gone from a 2.0K mean in April 2026 to 8.0K in October, and one audit had run in a
+month on one of twenty projects.
+
+```
+memory_audit (free)  ──▶  /memory:audit      proposals, applies nothing
+                              │ San approves by id
+                              ▼
+                          /memory:consolidate  one memory_write per proposal + BASELINE.md
+                              │ ~10 sessions later
+                              ▼
+                          /memory:audit-check  keep / kill / demote, written to CHECK.md
+```
+
+- **Measurement engine:** `scripts/memory-audit.mjs`. Session JSONL is the source: first-turn
+  `usage.input` gives the real cold start, `memory_read` calls give the read trail, bash
+  signatures give the rediscovery count. No model calls, no new storage (#34's sidecar is
+  redundant).
+- **Cadence:** derived, never stored. `audit.ts` reads the last commit touching
+  `project_insights/audit` and counts session files dated after it. Due at 20 sessions or 30
+  days; the notice appears in `memory_status` and as one line in the system prompt.
+- **Why a notice and not a cron:** a cron comments on nothing. The line reaches the model
+  inside the turn, and the model is the one who can run the loop.
+
+## 13. Gotchas
+
+- `memory_write` auto-initializes git if no repo exists at the resolved root.
+- `parseFrontmatter` handles simple YAML only (description, importance, tags, created,
+  updated). Nested structures are ignored.
+- `buildTreeView` walks directories recursively — large memory trees are slow. Progressive
+  disclosure is the caller's responsibility.
+- `memory_recall` is BM25-ranked with importance/recency boosts (#42), tolerant of malformed
+  JSONL lines, and returns bounded excerpts.
+- `index.ts` is the only file with tool/command registration; every other module is a concern
+  with no registration side effects.
+- The extension is loaded by reading `index.ts` through the symlink, so the symlink must exist
+  before pi starts and the working tree is the live code.
