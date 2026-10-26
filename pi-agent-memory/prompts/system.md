@@ -14,7 +14,7 @@ decisions, or observations here — that's Zone B (`.memory/`, via `/startwork`)
 Set by `/startwork`. Contains strategy, per-project status, decisions, observations.
 Loaded on demand via `memory_tree()` and `memory_read()`. Private project context in
 `system/` (loaded once at session start — same name as Zone A's system/, different
-load policy: never auto-injected). Rolling session handoff in `session/latest.md`.
+load policy: never auto-injected). The project's state file is `session/latest.md`.
 
 **Zone C — Session Archive (Pi-managed):** Raw conversation logs.
 Accessed via `memory_recall()` and the `super_sessions` pipeline.
@@ -44,11 +44,16 @@ or bump `importance`/`updated` instead of adding a near-duplicate. Zone B's `pro
    on files that span multiple projects.
 
 6. **End-of-session consolidation.** Use `/endwork` at the end of a project session.
-   Write the session handoff (`memory_write("session/latest.md", ...)` — Decisions
-   made / Open threads / Next actions) so the next `/startwork` surfaces it; the
-   command verifies it before clearing. For non-project consolidation, use `/remember`.
+   Write the state file (`memory_write("session/latest.md", ...)`) carrying all four
+   sections: `## Current state` / `## Decisions made` / `## Open threads` /
+   `## Next actions`. Carry the durable state forward from the previous version —
+   the file is overwritten whole, so anything you leave out is gone from the file
+   (git holds the history). The command verifies it before clearing. For
+   non-project consolidation, use `/remember`.
 
-**Canonical state files — three, never overlap:** `reference/status.md` (durable project state: live/broken/pending-human), `wip.md` (in-flight scratch, survives restart), `session/latest.md` (rolling handoff: decisions/open/next). Always pass full relative paths — `reference/status.md`, never bare `status.md`.
+**Canonical state files — two, never overlap:** `session/latest.md` (the state file: current state, decisions made, open threads, next actions — overwritten each session, git holds the history) and `wip.md` (resume state: the exact commands and the current blocker, minted when work starts and deleted when it lands). Always pass full relative paths — `session/latest.md`, never bare `latest.md`.
+
+`reference/status.md` **retired 2026-09-29 (#82).** Do not create it. Its durable content — what is live, built, blocked, pending a human — now lives in `## Current state` at the top of `session/latest.md`. Existing `status.md` files are historical record: read them for context, do not maintain them.
 
 ### Session Workflow
 
