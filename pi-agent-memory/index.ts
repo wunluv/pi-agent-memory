@@ -32,7 +32,7 @@ import {
 	rankSystemFiles,
 	type SystemFileEntry,
 } from "./context-budget";
-import { AUDIT_DIR, dueNotice, gatherAuditState, renderAuditLine, type AuditState } from "./audit";
+import { AUDIT_DIR, dueNotice, gatherAuditState, projectDirFor, renderAuditLine, type AuditState } from "./audit";
 import {
 	configureRepoAuthor,
 	ensureAgentIdentity,
@@ -586,6 +586,8 @@ async function measureMemory(opts: {
 	agent?: string;
 	minSessions?: number;
 	write?: boolean;
+	/** Scope the report to one project. Omitted or null = the whole portfolio. */
+	project?: string | null;
 }): Promise<{ audit: any; summary: string; tables: string | null } | null> {
 	const engine = await loadAuditEngine();
 	const audit = engine.runAudit({
@@ -594,6 +596,7 @@ async function measureMemory(opts: {
 		agent: opts.agent,
 		glob: opts.glob,
 		minSessions: opts.minSessions ?? 3,
+		project: opts.project || undefined,
 	});
 	if (!audit) return null;
 	const summary = engine.formatSummary(audit);
@@ -601,6 +604,7 @@ async function measureMemory(opts: {
 	refreshAuditState(opts.root);
 	return { audit, summary, tables };
 }
+
 
 /** Initialize a git repo at the given path */
 function initGitRepo(repoPath: string): boolean {
@@ -1572,10 +1576,11 @@ export default function (pi: ExtensionAPI) {
 		name: "memory_audit",
 		label: "Memory Audit",
 		description:
-			"Measure memory health: cold-start tokens per project and per month, which memory files are actually read, Zone A files nobody ever fetched, repeated command signatures with error counts, and Zone A budget occupancy. Free and read-only (no model calls). Writes tables only when write:true.",
+			"Measure memory health: cold-start tokens, which memory files are actually read, Zone A files nobody ever fetched, repeated command signatures with error counts, and Zone A budget occupancy. Scoped to this project and the active agent by default; pass scope \"global\" for the portfolio. Free and read-only (no model calls). Writes tables only when write:true.",
 		promptSnippet: "Measure memory cost, read trail and repeated procedures",
 		promptGuidelines: [
-			"Run this before proposing any memory edit — the numbers are the argument",
+			"Run this before proposing any memory edit: the numbers are the argument",
+			"Default scope is the memory you are standing in. A scoped \"never fetched\" claim means not fetched by this project, not dead.",
 			"Read the summary first; open the TSV tables only for the rows it flags",
 		],
 		parameters: Type.Object({
@@ -1584,18 +1589,26 @@ export default function (pi: ExtensionAPI) {
 			sessions: Type.Optional(Type.String({ description: "Session file glob, e.g. '2026-10-*'. Default: all." })),
 			minSessions: Type.Optional(Type.Number({ description: "Recurrence threshold for the signature tables. Default 3." })),
 			write: Type.Optional(Type.Boolean({ description: "Write the raw TSV tables to <root>/project_insights/audit/. Default false." })),
+			scope: Type.Optional(
+				Type.String({
+					description:
+						"'project' (default) reports this project's sessions and the active agent's Zone A, with the portfolio mean as one line of context. 'global' reports every project and every agent.",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params) {
 			const root = resolveMemoryRoot(params.root);
 			if (!root) {
 				return { content: [{ type: "text", text: "Memory audit: no root resolved. Use /startwork or /agent:switch first." }], details: {} };
 			}
+			const global = params.scope === "global";
 			const measured = await measureMemory({
 				root,
 				glob: params.sessions,
-				agent: params.agent,
+				agent: global ? params.agent : (params.agent ?? activeAgent),
 				minSessions: params.minSessions,
 				write: params.write === true,
+				project: global ? null : projectDirFor(root),
 			});
 			if (!measured) {
 				return { content: [{ type: "text", text: `Memory audit: no sessions found under ${SESSIONS_DIR}.` }], details: {} };
@@ -2504,6 +2517,38 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				ctx.ui.notify("No memory root. Use /startwork or /agent:switch first.", "warning");
 				return;
 			}
+			const measured = await measureMemory({
+				root,
+				glob: args.trim() || undefined,
+				write: true,
+				project: projectDirFor(root),
+				agent: activeAgent,
+			});
+			if (!measured) {
+				ctx.ui.notify(`No sessions found under ${SESSIONS_DIR}.`, "warning");
+				return;
+			}
+			const template = loadPrompt(
+				"audit",
+				"Measure memory and write proposals to project_insights/audit-<date>/proposals.md. Apply nothing.",
+			);
+			if (measured.tables) ctx.ui.notify(`Tables: ${measured.tables}`, "info");
+			await pi.sendUserMessage(template.replace("{{SUMMARY}}", measured.summary));
+		},
+	});
+
+	// The expansion, not the default: every project's sessions and every agent's
+	// Zone A in one report. Worth the wider lens when the question is "where is
+	// the cost across the workspace", and misleading when the question is about
+	// the memory you are standing in.
+	pi.registerCommand("memory:audit-global", {
+		description: "Portfolio-wide audit: every project and every agent's Zone A. Applies nothing. Usage: /memory:audit-global [session-glob]",
+		handler: async (args, ctx) => {
+			const root = resolveMemoryRoot();
+			if (!root) {
+				ctx.ui.notify("No memory root. Use /startwork or /agent:switch first.", "warning");
+				return;
+			}
 			const measured = await measureMemory({ root, glob: args.trim() || undefined, write: true });
 			if (!measured) {
 				ctx.ui.notify(`No sessions found under ${SESSIONS_DIR}.`, "warning");
@@ -2541,11 +2586,19 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 	});
 
 	pi.registerCommand("memory:audit-check", {
-		description: "Re-measure after a consolidation and decide keep/kill/demote against the baseline. Usage: /memory:audit-check [session-glob]",
+		description: "Re-measure after a consolidation and decide keep/kill/demote against the baseline. Same scope as /memory:audit; --global for the portfolio. Usage: /memory:audit-check [--global] [session-glob]",
 		handler: async (args, ctx) => {
 			const root = resolveMemoryRoot();
 			if (!root) return;
-			const measured = await measureMemory({ root, glob: args.trim() || undefined, write: true });
+			const global = args.includes("--global");
+			const glob = args.replace("--global", "").trim() || undefined;
+			const measured = await measureMemory({
+				root,
+				glob,
+				write: true,
+				project: global ? null : projectDirFor(root),
+				agent: global ? undefined : activeAgent,
+			});
 			if (!measured) return;
 			const template = loadPrompt(
 				"audit-check",

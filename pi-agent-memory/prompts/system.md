@@ -73,7 +73,9 @@ When the user wants to work on a project:
 Memory only grows unless something measures and prunes it. When the system prompt says
 **memory audit due**, or San asks what memory costs:
 
-1. `/memory:audit` — measure, then write proposals. Applies nothing. The numbers come from
+1. `/memory:audit` — measure this project (and the active agent's Zone A), then write proposals.
+   Applies nothing. `/memory:audit-global` widens to every project when the question is about the
+   whole workspace, not the memory you are standing in. The numbers come from
    `memory_audit` (free, no model calls): cold-start tokens, read trail, never-read files,
    repeated procedures.
 2. San approves specific proposals by id.

@@ -163,12 +163,78 @@ export function agentBudget(agentSystemDir, budget = DEFAULT_BUDGET) {
  * opts.minSessions   recurrence threshold for the signature tables (default 3)
  * opts.budget        Zone A token budget (default 2400)
  */
+/**
+ * First-turn input tokens across the whole corpus, for the one line of context a
+ * scoped run still owes the reader. Stops parsing each file at the first
+ * assistant turn, so it costs a fraction of the full pass.
+ */
+export function portfolioColdStart(sessionsRoot, glob) {
+	const fileRe = glob
+		? new RegExp("^" + String(glob).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$")
+		: null;
+	const inputs = [];
+	let sessions = 0;
+	let dirs = [];
+	try {
+		dirs = fs.readdirSync(sessionsRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+	} catch {
+		return null;
+	}
+	for (const dirName of dirs) {
+		let files = [];
+		try {
+			files = fs.readdirSync(path.join(sessionsRoot, dirName)).filter((f) => f.endsWith(".jsonl"));
+		} catch {
+			continue;
+		}
+		for (const f of files) {
+			if (fileRe && !fileRe.test(f)) continue;
+			sessions++;
+			let lines;
+			try {
+				lines = fs.readFileSync(path.join(sessionsRoot, dirName, f), "utf8").split("\n");
+			} catch {
+				continue;
+			}
+			for (const line of lines) {
+				if (!line.trim()) continue;
+				let d;
+				try {
+					d = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				if (d.type !== "message" || !d.message || d.message.role !== "assistant") continue;
+				const usage = d.message.usage || {};
+				if (!usage.input) continue; // match runAudit: first assistant turn WITH usage
+				inputs.push(usage.input);
+				break;
+			}
+		}
+	}
+	const sorted = inputs.sort((a, b) => a - b);
+	return { sessions, measured: sorted.length, mean: mean(sorted), p50: pct(sorted, 0.5), p90: pct(sorted, 0.9) };
+}
+
 export function runAudit(opts = {}) {
 	const sessionsRoot = opts.sessionsRoot || path.join(os.homedir(), ".pi", "agent", "sessions");
 	const agentsDir = opts.agentsDir || path.join(os.homedir(), ".pi", "agents");
 	const minSessions = Number(opts.minSessions || 3);
 	const budget = Number(opts.budget || DEFAULT_BUDGET);
 	const glob = opts.glob || "";
+	/**
+	 * `project` scopes the run to one project's session directories: the audit a
+	 * session needs is the audit of the memory it is standing in, not the
+	 * portfolio's. The corpus scan stays cheap either way (no model calls), but
+	 * reporting 594 sessions when 30 belong to this project invites reading the
+	 * wrong number as if it were the local one.
+	 *
+	 * One thing must NOT be silently scoped: the "never fetched" list. A file
+	 * fetched only from another project looks dead here, and a dead-looking file
+	 * is an argument for deletion. When scoped, that claim is stated as what it
+	 * is — not fetched by THIS project's sessions.
+	 */
+	const projectFilter = opts.project ? String(opts.project).replace(/\/+$/, "") : "";
 	const fileRe = glob
 		? new RegExp(
 				"^" + glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$",
@@ -197,8 +263,13 @@ export function runAudit(opts = {}) {
 	for (const dirName of dirs) {
 		const dir = path.join(sessionsRoot, dirName);
 		const proj = projectOf(dirName);
-		if (!projects.has(proj)) projects.set(proj, { sessions: 0, inputs: [], last: "", systemDate: "" });
-		const m = projects.get(proj);
+		if (projectFilter && proj !== projectFilter && !proj.startsWith(projectFilter + "/")) continue;
+		// Scoped, every matching directory belongs to one project: a session started
+		// in a subdirectory is not a second project, and a one-project report should
+		// not rank itself against its own subdirectories.
+		const projKey = projectFilter || proj;
+		if (!projects.has(projKey)) projects.set(projKey, { sessions: 0, inputs: [], last: "", systemDate: "" });
+		const m = projects.get(projKey);
 
 		let files = [];
 		try {
@@ -274,7 +345,7 @@ export function runAudit(opts = {}) {
 
 			if (firstIn) {
 				m.inputs.push(firstIn);
-				heaviest.push({ session: id, project: proj, input: firstIn, date: sessionDate });
+				heaviest.push({ session: id, project: projKey, input: firstIn, date: sessionDate });
 				if (sessionDate > m.last) m.last = sessionDate;
 				const mo = sessionDate.slice(0, 7);
 				if (!monthly.has(mo)) monthly.set(mo, []);
@@ -283,7 +354,7 @@ export function runAudit(opts = {}) {
 
 			if (latestSystem && m.systemDate <= sessionDate) {
 				m.systemDate = sessionDate;
-				sectionSizes[proj] = latestSystem;
+				sectionSizes[projKey] = latestSystem;
 			}
 		}
 	}
@@ -327,6 +398,10 @@ export function runAudit(opts = {}) {
 	const allInputs = [...projects.values()].flatMap((m) => m.inputs).sort((a, b) => a - b);
 
 	return {
+		scope: {
+			project: projectFilter || null,
+			portfolio: projectFilter ? portfolioColdStart(sessionsRoot, glob) : null,
+		},
 		totals: {
 			sessions: [...projects.values()].reduce((n, m) => n + m.sessions, 0),
 			measured: allInputs.length,
@@ -375,13 +450,24 @@ export function formatSummary(a) {
 	if (!a) return "No sessions found.";
 	const lines = [];
 	const t = a.totals;
+	const scope = a.scope || { project: null, portfolio: null };
+	const scoped = !!scope.project;
+	const where = scoped ? "this project" : "all sessions";
+
 	lines.push(
-		`Cold start: mean ${t.mean}, p50 ${t.p50}, p90 ${t.p90}, max ${t.max} tokens over ${t.measured} of ${t.sessions} sessions.`,
+		`Cold start (${where}): mean ${t.mean}, p50 ${t.p50}, p90 ${t.p90}, max ${t.max} tokens over ${t.measured} of ${t.sessions} sessions.`,
 	);
+	// A scoped run still owes the reader the portfolio number, because a local
+	// mean means nothing without knowing whether the local repo is light or heavy.
+	if (scoped && scope.portfolio) {
+		lines.push(
+			`Portfolio for comparison: mean ${scope.portfolio.mean}, p90 ${scope.portfolio.p90} over ${scope.portfolio.measured} sessions. /memory:audit-global for all of it.`,
+		);
+	}
 	const first = a.trend[0];
 	const last = a.trend[a.trend.length - 1];
 	if (first && last && first.month !== last.month) {
-		lines.push(`Trend: ${first.month} mean ${first.mean} → ${last.month} mean ${last.mean}.`);
+		lines.push(`Trend (${where}): ${first.month} mean ${first.mean} → ${last.month} mean ${last.mean}.`);
 	}
 	for (const b of a.budgets) {
 		lines.push(
@@ -390,16 +476,24 @@ export function formatSummary(a) {
 		);
 	}
 	if (a.dead.length) {
-		lines.push(`Never fetched on demand: ${a.dead.map((d) => `${d.agent}/system/${d.rel} (${d.tokens} tok)`).join("; ")}`);
+		// Scoped, this is a weaker claim and must say so: a file read only from
+		// another project looks dead here, and "dead" is an argument for deletion.
+		lines.push(
+			`Never fetched on demand${scoped ? " by this project's sessions" : ""}: ${a.dead.map((d) => `${d.agent}/system/${d.rel} (${d.tokens} tok)`).join("; ")}`,
+		);
 	}
-	lines.push(`Read trail: ${a.reads.length} distinct paths. Top: ${a.reads.slice(0, 3).map((r) => `${r.path.replace(os.homedir(), "~")} ×${r.hits}`).join(", ")}.`);
+	lines.push(
+		`Read trail (${where}): ${a.reads.length} distinct paths. Top: ${a.reads.slice(0, 3).map((r) => `${r.path.replace(os.homedir(), "~")} ×${r.hits}`).join(", ")}.`,
+	);
 	const worst = [...a.commands].sort((x, y) => y.errors - x.errors).slice(0, 3);
 	if (worst.length) {
 		lines.push(`Repeated procedures, most errors: ${worst.map((c) => `${c.signature} (${c.sessions} sessions, ${c.errors} errors)`).join("; ")}.`);
 	}
-	const heavy = a.cost.slice(0, 3);
-	if (heavy.length) {
-		lines.push(`Heaviest projects: ${heavy.map((c) => `${c.project.replace(os.homedir(), "~")} mean ${c.mean}`).join("; ")}.`);
+	if (!scoped) {
+		const heavy = a.cost.slice(0, 3);
+		if (heavy.length) {
+			lines.push(`Heaviest projects: ${heavy.map((c) => `${c.project.replace(os.homedir(), "~")} mean ${c.mean}`).join("; ")}.`);
+		}
 	}
 	return lines.join("\n");
 }

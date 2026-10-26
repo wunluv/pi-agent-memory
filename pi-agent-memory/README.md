@@ -41,9 +41,10 @@ Zone C (Sessions)  .pi/sessions/                    Pi-managed, accessed via mem
 | `/agent:sync` | Manually sync active memory (Zone A, Zone B, or org root) |
 | `/agent:pull <uuid>` | Pull an agent's memory from the sync server |
 | `/memory:sync-config` | View or set sync config |
-| `/memory:audit [glob]` | Measure memory, write proposals for pruning it. Applies nothing |
+| `/memory:audit [glob]` | Measure THIS project (plus the active agent's Zone A), write proposals. Applies nothing |
+| `/memory:audit-global [glob]` | Measure every project and every agent. Applies nothing |
 | `/memory:consolidate <proposals> [P1 …]` | Apply approved proposals, record the baseline |
-| `/memory:audit-check [glob]` | Re-measure after ~10 sessions: keep, kill or demote |
+| `/memory:audit-check [--global] [glob]` | Re-measure after ~10 sessions: keep, kill or demote |
 
 ## Tools
 

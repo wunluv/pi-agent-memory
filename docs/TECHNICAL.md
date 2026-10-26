@@ -172,16 +172,17 @@ ssh provisioning fallback.
 | `memory_status(root?, checkRemote?)` | standard chain | zone, registration, local git state, last sync result, audit cadence line (#48) |
 | `memory_sync_config(get\|set)` | global config | get/set `server_url`, `push_on_commit`, `pull_on_start` |
 | `memory_recall(query)` | Zone C only | BM25 over session JSONL, malformed-line tolerant, bounded excerpts (#42) |
-| `memory_audit(root?, agent?, sessions?, minSessions?, write?)` | standard chain | the measurement engine (#92); free and read-only, writes TSVs only when `write:true` |
+| `memory_audit(root?, agent?, sessions?, minSessions?, write?, scope?)` | standard chain | the measurement engine (#92); `scope: "project"` (default) or `"global"` (#99); free and read-only, writes TSVs only when `write:true` |
 
 Plus `super_sessions_analyze` / `super_sessions_synthesize` (sibling extension,
 consumes Zone C → writes analyses/wisdom into project memory).
 
-**Commands (18):** `/agent:init`, `/agent:promote`, `/agent:switch`, `/agent:sync`,
+**Commands (19):** `/agent:init`, `/agent:promote`, `/agent:switch`, `/agent:sync`,
 `/agent:pull [uuid]`, `/startwork [project|path]`, `/endwork`, `/remember`,
 `/memory:init <path>`, `/memory:tree`, `/memory:read`, `/memory:search`,
 `/memory:recall`, `/memory:sync-config`, `/memory:status`, `/memory:audit [glob]`,
-`/memory:consolidate <proposals> [P1 …]`, `/memory:audit-check [glob]`.
+`/memory:audit-global [glob]`, `/memory:consolidate <proposals> [P1 …]`,
+`/memory:audit-check [--global] [glob]`.
 
 **Hooks (2):** `before_agent_start` → `buildSystemContext()` injects all
 `system/*.md` recursively into the system prompt (~850 tokens, pinned by #36);
@@ -288,7 +289,7 @@ start had gone from a 2.0K mean in April 2026 to 8.0K in October, and one audit 
 month on one of twenty projects.
 
 ```
-memory_audit (free)  ──▶  /memory:audit      proposals, applies nothing
+memory_audit (free)  ──▶  /memory:audit      this project's numbers; proposals, applies nothing
                               │ San approves by id
                               ▼
                           /memory:consolidate  one memory_write per proposal + BASELINE.md
@@ -297,6 +298,11 @@ memory_audit (free)  ──▶  /memory:audit      proposals, applies nothing
                           /memory:audit-check  keep / kill / demote, written to CHECK.md
 ```
 
+- **Scope (#99):** `/memory:audit` reports the project the session is standing in, plus the
+  active agent's Zone A, and carries the portfolio mean as one line of context.
+  `/memory:audit-global` widens to every project and every agent. A scoped `never fetched`
+  claim is stated as "by this project's sessions" — a file read only from another project
+  looks dead in a narrow view, and dead-looking is an argument for deletion.
 - **Measurement engine:** `scripts/memory-audit.mjs`. Session JSONL is the source: first-turn
   `usage.input` gives the real cold start, `memory_read` calls give the read trail, bash
   signatures give the rediscovery count. No model calls, no new storage (#34's sidecar is

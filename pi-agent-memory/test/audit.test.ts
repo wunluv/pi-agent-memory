@@ -20,7 +20,7 @@ import {
 	sessionDirName,
 } from "../audit.ts";
 import type { GitFn } from "../identity.ts";
-import { auditFrontmatter, agentBudget, runAudit, cmdSignature } from "../scripts/memory-audit.mjs";
+import { auditFrontmatter, agentBudget, runAudit, formatSummary, cmdSignature } from "../scripts/memory-audit.mjs";
 import { budgetSystemInjection, rankSystemFiles, type SystemFileEntry } from "../context-budget.ts";
 
 const git: GitFn = (args, cwd) => {
@@ -224,6 +224,80 @@ assert.equal(cmdSignature("ssh mojah2 'git --git-dir=/x log'"), "ssh mojah2 Q");
 	assert.deepEqual(a.budgets, [], "no agents dir → no Zone A rows, no throw");
 	assert.equal(a.reads.length, 0);
 	assert.equal(runAudit({ sessionsRoot: path.join(s.root, "missing") }), null);
+}
+
+// ─── project scoping: the local report, with the portfolio as context ───────
+
+{
+	const s = makeSessions();
+	addSessions(s.root, "/tmp/proj/alpha/sub", ["2026-10-04"]); // a session started below the project
+	addSessions(s.root, "/tmp/other", ["2026-10-05"]);
+	// give alpha real first-turn usage, so cold start and the trend have numbers
+	const usageLine = (n: number) =>
+		JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: n }, content: [] } }) + "\n";
+	fs.writeFileSync(path.join(s.root, sessionDirName("/tmp/proj/alpha"), "2026-09-20T10-00-00-000Z_u.jsonl"), usageLine(7000));
+	fs.writeFileSync(path.join(s.root, sessionDirName("/tmp/proj/alpha"), "2026-10-06T10-00-00-000Z_u.jsonl"), usageLine(9000));
+	fs.writeFileSync(path.join(s.root, sessionDirName("/tmp/other"), "2026-10-07T10-00-00-000Z_u.jsonl"), usageLine(3000));
+
+	const local = runAudit({ sessionsRoot: s.root, agentsDir: path.join(s.root, "no-agents"), minSessions: 1, project: "/tmp/proj/alpha" });
+	assert.ok(local);
+	assert.equal(local.scope.project, "/tmp/proj/alpha");
+	assert.equal(local.totals.sessions, 6, "the project's own dirs, including one nested below it");
+	assert.equal(local.totals.mean, 8000, "only this project's usage");
+	assert.equal(local.cost.length, 1, "only this project appears in the cost table");
+	assert.equal(local.scope.portfolio.sessions, 9, "the portfolio figure still counts everything");
+	assert.equal(local.scope.portfolio.mean, 6333, "and averages the other project in");
+
+	const text = formatSummary(local);
+	assert.ok(text.includes("Cold start (this project)"), text);
+	assert.ok(text.includes("Portfolio for comparison"), "the local mean is given context");
+	assert.ok(text.includes("/memory:audit-global"), "and names the way to widen it");
+	assert.ok(text.includes("Trend (this project)"), text);
+	assert.ok(!text.includes("Heaviest projects"), "a one-project report has no ranking to show");
+
+	// A portfolio run stays as it was: no scope words, and it ranks projects.
+	const global = runAudit({ sessionsRoot: s.root, agentsDir: path.join(s.root, "no-agents"), minSessions: 1 });
+	assert.equal(global.scope.project, null);
+	assert.equal(global.scope.portfolio, null);
+	assert.equal(global.totals.sessions, 9);
+	const globalText = formatSummary(global);
+	assert.ok(globalText.includes("Cold start (all sessions)"), globalText);
+	assert.ok(!globalText.includes("Portfolio for comparison"));
+	assert.ok(globalText.includes("Heaviest projects"), globalText);
+}
+
+// scoped "never fetched" says what it means: not fetched HERE, not dead
+{
+	const s = makeSessions();
+	const agentsDir = path.join(s.root, "agents");
+	const sys = path.join(agentsDir, "a1", "memory", "system");
+	fs.mkdirSync(sys, { recursive: true });
+	fs.writeFileSync(path.join(sys, "persona.md"), "---\nimportance: 5\n---\n" + "x".repeat(400));
+
+	// Beta's session reads the agent file; alpha's does not.
+	const betaDir = path.join(s.root, sessionDirName("/tmp/proj/beta"));
+	fs.writeFileSync(
+		path.join(betaDir, "2026-10-03T10-00-00-000Z_y.jsonl"),
+		JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				usage: { input: 5000 },
+				content: [{ type: "toolCall", id: "c1", name: "memory_read", arguments: { path: "persona.md", root: sys } }],
+			},
+		}) + "\n",
+	);
+
+	const scoped = runAudit({ sessionsRoot: s.root, agentsDir, minSessions: 99, project: "/tmp/proj/alpha" });
+	assert.equal(scoped.dead.length, 1, "alpha never read it, so it looks dead here");
+	assert.ok(
+		formatSummary(scoped).includes("by this project's sessions"),
+		"the claim is scoped in words, because dead is an argument for deletion",
+	);
+
+	const global = runAudit({ sessionsRoot: s.root, agentsDir, minSessions: 99 });
+	assert.equal(global.dead.length, 0, "portfolio-wide, beta's read counts");
+	assert.ok(!formatSummary(global).includes("by this project's sessions"));
 }
 
 console.log("audit tests passed");
