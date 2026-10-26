@@ -549,3 +549,22 @@ function buildSystemContext(): string {
 - **Semantic vs keyword:** do you want BM25 now and Phase-2 `VectorIndex` later, or go straight to embeddings? BM25 is the cheap 80%; embeddings are the semantic 20% that handles paraphrase. My call: BM25 now, embeddings when retrieval quality actually hurts.
 - **Consolidation agency:** should `/endwork` auto-run consolidation, or should it *propose* changes and ask you to confirm (human-in-the-loop per your methodology)? I lean propose-first for the first few sessions, then auto as trust builds.
 - **Registry authority:** keep `projects.md` as source-of-truth with a strict parser, or make `registry.json` authoritative? The former is less machinery; the latter is deterministic.
+
+## 6. Extension points (Phase 2)
+
+Moved here from `AGENTS.md` on 2026-10-23 (memory audit P2): the four hooks are one-liners there and the
+reasoning does not need to be always loaded. The methodology says grow by extension, so each of these is
+intentionally absent in Phase 1 rather than half-built.
+
+- **`beforeMemoryWrite` hook** — validate or censor a write before it lands. The #36 `system/` budget
+  guard and the #81 required-field validation both live inside `execute()` today; this hook would let a
+  project add its own rule without touching the tool.
+- **`afterMemoryCommit` hook** — a general post-commit seam. Push-to-remote and index-refresh both want
+  it; `maybeSyncAfterCommit` is the only current consumer and it is hardwired to the sync roles.
+- **`resolveMemoryRoot` plugin** — custom root resolution. Needed by #75 (ordered layers: a project
+  `system/` file overrides the agent root) and #76 (shared human layer), which are the same ladder
+  climbed from two directions.
+- **Archival storage backend** — pluggable embedder plus vector store for content that has left
+  `system/`. Only worth building once `knowledge/` on-demand reads are measured as too slow or too
+  imprecise; the October 2026 audit showed 336 distinct paths ever read, so the corpus is not yet large
+  enough to justify embeddings.

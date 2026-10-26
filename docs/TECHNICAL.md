@@ -127,24 +127,27 @@ ssh provisioning fallback.
 
 ## 6. Tools and commands
 
-**Tools (6, this extension):**
+**Tools (8, this extension):**
 
 | Tool | Root resolution | Notes |
 |------|-----------------|-------|
 | `memory_tree(path?, root?)` | standard chain | directory listing from frontmatter descriptions, star ratings, no bodies |
 | `memory_read(path, root?)` | standard chain | full file + frontmatter, extracts `[[links]]` |
-| `memory_write(path, content, description, tags?, importance?, root?)` | standard chain | atomic write+commit; `overrideReason` required for live `system/` spine writes (#36) |
-| `memory_search(query, root?)` | standard chain | ranked (BM25 + importance/recency boosts), 10-match cap |
-| `memory_recall(query)` | Zone C only | BM25 over session JSONL, malformed-line tolerant, bounded excerpts (#42) |
+| `memory_write(path, content, description, tags?, importance?, root?, overrideReason?)` | standard chain | atomic write+commit; `overrideReason` required for live `system/` spine writes (#36) |
+| `memory_search(query, corpus?, root?)` | standard chain + org commons | ranked (BM25 + importance/recency boosts); `corpus: local\|shared\|all` in one pass (#71) |
+| `memory_status(root?, checkRemote?)` | standard chain | zone, registration, local git state, last sync result, audit cadence line (#48) |
 | `memory_sync_config(get\|set)` | global config | get/set `server_url`, `push_on_commit`, `pull_on_start` |
+| `memory_recall(query)` | Zone C only | BM25 over session JSONL, malformed-line tolerant, bounded excerpts (#42) |
+| `memory_audit(root?, agent?, sessions?, minSessions?, write?)` | standard chain | the measurement engine (#92); free and read-only, writes TSVs only when `write:true` |
 
 Plus `super_sessions_analyze` / `super_sessions_synthesize` (sibling extension,
 consumes Zone C → writes analyses/wisdom into project memory).
 
-**Commands (13):** `/agent:init`, `/agent:switch`, `/agent:sync`, `/agent:pull
-[uuid]`, `/startwork [project|path]`, `/endwork`, `/remember`, `/memory:init
-<path>`, `/memory:tree`, `/memory:read`, `/memory:search`, `/memory:recall`,
-`/memory:sync-config`.
+**Commands (18):** `/agent:init`, `/agent:promote`, `/agent:switch`, `/agent:sync`,
+`/agent:pull [uuid]`, `/startwork [project|path]`, `/endwork`, `/remember`,
+`/memory:init <path>`, `/memory:tree`, `/memory:read`, `/memory:search`,
+`/memory:recall`, `/memory:sync-config`, `/memory:status`, `/memory:audit [glob]`,
+`/memory:consolidate <proposals> [P1 …]`, `/memory:audit-check [glob]`.
 
 **Hooks (2):** `before_agent_start` → `buildSystemContext()` injects all
 `system/*.md` recursively into the system prompt (~850 tokens, pinned by #36);
@@ -177,19 +180,46 @@ session_start   → clear session root; syncOrgOnStart (2.5s fail-fast); auto-di
 
 ## 9. Module map
 
+### Repository layout
+
+```
+pi-agent-memory/
+  index.ts            entry: tool + command + hook registration, session root, guards
+  *.ts                one module per concern (below); no npm dependencies
+  prompts/            system.md (injected every turn) + the ritual templates
+  scripts/
+    memory-audit.mjs  measurement engine (#92): CLI and imported by audit.ts
+    legacy/           archived Letta-era protocol; canonical is prompts/system.md
+  test/               pure unit suites
+  test-harness/       tests that drive a registered tool through a fake pi
+SPEC_v4.md            canonical spec
+AGENTS.md             engineering contract
+VMA.md                vision, mission, aims
+docs/                 DATA-MODEL, TECHNICAL, EXPLAINED, WBS, IMPROVEMENT-DRAFTS
+.memory/              this project's own memory (local git)
+```
+
+### Modules
+
 ```
 index.ts           entry: tools, commands, hooks, guards, session root, bootstrap
 sync.ts            config, derived URLs, guards, syncOnce/pullOnce/pushAsync, child script
 identity.ts        agent.json/project.json, registry read/write, uuid minting
 discovery.ts       nearest-.memory/ walk-up, resolve-once cache
 paths.ts           path normalization, ~ expansion
+scope.ts           scope resolution + reporting for read/search/tree results (#73)
 ranked-search.ts   BM25 + importance/recency boosts
-session-search.ts  Zone C JSONL scan (memory_recall)
+session-search.ts  Zone C JSONL retrieval adapter for memory_recall
+search-sessions.ts `ss` CLI: the same BM25 over session files, for the shell
 backlinks.ts       [[link]] extraction/traversal
 context-budget.ts  system/ injection budget + pinning (#36)
+handoff.ts         session handoff contract: .memory/session/latest.md (#50)
+status.ts          memory + sync health surface (#48)
+project-lookup.ts  system/projects.md fallback lookup, miss diagnosis (#65)
 gitignore.ts       .gitignore excludes .memory/ on bootstrap
-prompts/           system.md (injected every turn), startwork.md, endwork.md, init-memory.md
-test/              8 files: backlinks, context-budget, discovery, gitignore, identity, paths, session-search, sync
+audit.ts           maintenance cadence: last audit from git, sessions since (#92)
+prompts/           system.md (injected every turn), startwork, endwork, audit,
+                   consolidate, audit-check, init-memory
 ```
 
 ## 10. Known gaps (as of 2026-08-24)
