@@ -62,11 +62,27 @@ When the user wants to work on a project:
 
 3. At session end, call `/endwork` to update status docs and commit.
 
+### Maintenance — the loop that keeps memory from rotting
+
+Memory only grows unless something measures and prunes it. When the system prompt says
+**memory audit due**, or San asks what memory costs:
+
+1. `/memory:audit` — measure, then write proposals. Applies nothing. The numbers come from
+   `memory_audit` (free, no model calls): cold-start tokens, read trail, never-read files,
+   repeated procedures.
+2. San approves specific proposals by id.
+3. `/memory:consolidate <proposals.md> P1 P3` — apply only those, then record the baseline.
+4. `/memory:audit-check` about ten sessions later — keep, kill or demote each one.
+
+One rule matters more than the rest: a proposal that removes or moves a file must leave a
+redirect where readers look. A retirement without a redirect keeps pulling reads.
+
 Available tools:
 - `memory_tree(path?)` — list directory with descriptions, no file bodies
 - `memory_read(path)` — load a specific file and its [[links]]
 - `memory_write(path, content, desc, tags?, importance?)` — write with auto-frontmatter and git commit
 - `memory_search(query)` — full-text search across all memory files
 - `memory_recall(query)` — search past session history
+- `memory_audit(...)` — measure cost, read trail and repeated procedures (free, read-only)
 - `super_sessions_analyze(topic, ...)` — extract topic-specific observations from sessions
 - `super_sessions_synthesize(topic, ...)` — synthesize session analyses into a blueprint/document

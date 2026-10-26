@@ -32,6 +32,7 @@ import {
 	rankSystemFiles,
 	type SystemFileEntry,
 } from "./context-budget";
+import { AUDIT_DIR, dueNotice, gatherAuditState, renderAuditLine, type AuditState } from "./audit";
 import {
 	configureRepoAuthor,
 	ensureAgentIdentity,
@@ -476,6 +477,65 @@ const statusEnv: StatusEnv = {
 	orgRoot: ORG_ROOT,
 };
 
+// ─── Maintenance cadence (#92) ──────────────────────────────────────────────────
+//
+// The audit loop only runs when something asks it to, and nothing did: one audit
+// in a month, on one of twenty projects, while cold start quadrupled since April.
+// The cadence is derived from git plus session file names (audit.ts), so there is
+// no state file to keep in sync, and cached here so the hot path does no I/O.
+
+let auditState: AuditState | null = null;
+
+/** Recompute the audit cadence for a root. Cheap; call it at session start and after an audit. */
+function refreshAuditState(rootOverride?: string | null): AuditState | null {
+	const root = rootOverride ?? resolveMemoryRoot();
+	if (!root) {
+		auditState = null;
+		return null;
+	}
+	try {
+		auditState = gatherAuditState({ git, root, sessionsRoot: SESSIONS_DIR });
+	} catch {
+		auditState = null;
+	}
+	return auditState;
+}
+
+/**
+ * The measurement engine, imported from scripts/memory-audit.mjs.
+ *
+ * One implementation, two entry points: the CLI for a human or a cron job, this
+ * tool for the agent. Copying the scan into TypeScript would mean two numbers
+ * that drift apart, and the whole loop rests on the numbers being true.
+ */
+async function loadAuditEngine(): Promise<any> {
+	const { pathToFileURL } = await import("node:url");
+	return import(pathToFileURL(path.join(__dirname, "scripts", "memory-audit.mjs")).href);
+}
+
+/** Run the measurement for a root, optionally writing the tables beside it. */
+async function measureMemory(opts: {
+	root: string;
+	glob?: string;
+	agent?: string;
+	minSessions?: number;
+	write?: boolean;
+}): Promise<{ audit: any; summary: string; tables: string | null } | null> {
+	const engine = await loadAuditEngine();
+	const audit = engine.runAudit({
+		sessionsRoot: SESSIONS_DIR,
+		agentsDir: AGENTS_DIR,
+		agent: opts.agent,
+		glob: opts.glob,
+		minSessions: opts.minSessions ?? 3,
+	});
+	if (!audit) return null;
+	const summary = engine.formatSummary(audit);
+	const tables = opts.write ? engine.writeTables(audit, path.join(opts.root, AUDIT_DIR)) : null;
+	refreshAuditState(opts.root);
+	return { audit, summary, tables };
+}
+
 /** Initialize a git repo at the given path */
 function initGitRepo(repoPath: string): boolean {
 	fs.mkdirSync(repoPath, { recursive: true });
@@ -809,6 +869,13 @@ Available tools: memory_tree, memory_read, memory_write, memory_search, memory_r
 				.join(", ")}. Reachable via memory_read().]`,
 		);
 	}
+
+	// #92: the cadence notice. One line, only when an audit is due. It lives in
+	// the system prompt rather than a toast because a toast never reaches the
+	// model, and the model is the one who can run the audit.
+	const audit = auditState ?? refreshAuditState();
+	const notice = audit ? dueNotice(audit) : null;
+	if (notice) sections.push(`\n[maintenance] ${notice}`);
 
 	sections.push("</memory_system>");
 	return sections.join("\n");
@@ -1463,10 +1530,52 @@ export default function (pi: ExtensionAPI) {
 				activeAgent,
 				checkRemote: params.checkRemote === true,
 			});
+			const audit = refreshAuditState(root);
+			const statusText = renderStatus(report) + (audit ? `\n\n${renderAuditLine(audit)}` : "");
 			return {
-				content: [{ type: "text", text: renderStatus(report) }],
-				details: { zone: report.zone, registered: report.registered, syncEnabled: report.syncEnabled },
+				content: [{ type: "text", text: statusText }],
+				details: { zone: report.zone, registered: report.registered, syncEnabled: report.syncEnabled, auditDue: audit?.due ?? false },
 			};
+		},
+	});
+
+	// #92: measurement. Same engine as scripts/memory-audit.mjs, in process.
+	pi.registerTool({
+		name: "memory_audit",
+		label: "Memory Audit",
+		description:
+			"Measure memory health: cold-start tokens per project and per month, which memory files are actually read, Zone A files nobody ever fetched, repeated command signatures with error counts, and Zone A budget occupancy. Free and read-only (no model calls). Writes tables only when write:true.",
+		promptSnippet: "Measure memory cost, read trail and repeated procedures",
+		promptGuidelines: [
+			"Run this before proposing any memory edit — the numbers are the argument",
+			"Read the summary first; open the TSV tables only for the rows it flags",
+		],
+		parameters: Type.Object({
+			root: Type.Optional(Type.String({ description: "Memory root to measure against. Defaults to session root, then agent root." })),
+			agent: Type.Optional(Type.String({ description: "Only measure this agent's Zone A. Default: every agent found." })),
+			sessions: Type.Optional(Type.String({ description: "Session file glob, e.g. '2026-10-*'. Default: all." })),
+			minSessions: Type.Optional(Type.Number({ description: "Recurrence threshold for the signature tables. Default 3." })),
+			write: Type.Optional(Type.Boolean({ description: "Write the raw TSV tables to <root>/project_insights/audit/. Default false." })),
+		}),
+		async execute(_toolCallId, params) {
+			const root = resolveMemoryRoot(params.root);
+			if (!root) {
+				return { content: [{ type: "text", text: "Memory audit: no root resolved. Use /startwork or /agent:switch first." }], details: {} };
+			}
+			const measured = await measureMemory({
+				root,
+				glob: params.sessions,
+				agent: params.agent,
+				minSessions: params.minSessions,
+				write: params.write === true,
+			});
+			if (!measured) {
+				return { content: [{ type: "text", text: `Memory audit: no sessions found under ${SESSIONS_DIR}.` }], details: {} };
+			}
+			const text = measured.tables
+				? `${measured.summary}\n\ntables: ${measured.tables}`
+				: measured.summary;
+			return { content: [{ type: "text", text }], details: { totals: measured.audit.totals, audit: renderAuditLine(auditState!) } };
 		},
 	});
 
@@ -2009,6 +2118,7 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			const begin = (root: string) => {
 				sessionMemoryRoot = root;
 				syncProjectOnStart(root);
+				refreshAuditState(root);
 				// #50: handoff surfaced first — the distilled "where we were"
 				const handoff = loadSessionHandoff(root);
 				// #47: project system/ context — loaded once, never injected per-turn
@@ -2331,7 +2441,74 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				return;
 			}
 			const report = gatherStatus(statusEnv, { root, activeAgent, checkRemote });
-			ctx.ui.notify(renderStatus(report), "info");
+			const audit = refreshAuditState(root);
+			ctx.ui.notify(renderStatus(report) + (audit ? `\n\n${renderAuditLine(audit)}` : ""), "info");
+		},
+	});
+
+	// ─── Maintenance loop (#92) ─────────────────────────────────────────────────
+	//
+	// The extension does the mechanical part (measure, write tables, keep the
+	// cadence) and hands judgement to a prompt template: proposals, approval,
+	// baseline, check. Same split as the friction audit, deliberately.
+
+	pi.registerCommand("memory:audit", {
+		description: "Measure memory and write proposals for pruning it. Applies nothing. Usage: /memory:audit [session-glob]",
+		handler: async (args, ctx) => {
+			const root = resolveMemoryRoot();
+			if (!root) {
+				ctx.ui.notify("No memory root. Use /startwork or /agent:switch first.", "warning");
+				return;
+			}
+			const measured = await measureMemory({ root, glob: args.trim() || undefined, write: true });
+			if (!measured) {
+				ctx.ui.notify(`No sessions found under ${SESSIONS_DIR}.`, "warning");
+				return;
+			}
+			const template = loadPrompt(
+				"audit",
+				"Measure memory and write proposals to project_insights/audit-<date>/proposals.md. Apply nothing.",
+			);
+			if (measured.tables) ctx.ui.notify(`Tables: ${measured.tables}`, "info");
+			await pi.sendUserMessage(template.replace("{{SUMMARY}}", measured.summary));
+		},
+	});
+
+	pi.registerCommand("memory:consolidate", {
+		description: "Apply approved audit proposals, then record the baseline. Usage: /memory:consolidate <proposals.md> [P1 P3 ...]",
+		handler: async (args, ctx) => {
+			const root = resolveMemoryRoot();
+			if (!root) return;
+			const [proposals, ...approved] = args.trim().split(/\s+/).filter(Boolean);
+			if (!proposals) {
+				ctx.ui.notify("Usage: /memory:consolidate <proposals.md> [P1 P3 ...]", "warning");
+				return;
+			}
+			const template = loadPrompt(
+				"consolidate",
+				"Apply the approved proposals with one memory_write each, then re-measure and write BASELINE.md.",
+			);
+			await pi.sendUserMessage(
+				template
+					.replace("{{PROPOSALS}}", proposals)
+					.replace("{{APPROVED}}", approved.length ? approved.join(", ") : "(none given — ask San which to apply, then stop)"),
+			);
+		},
+	});
+
+	pi.registerCommand("memory:audit-check", {
+		description: "Re-measure after a consolidation and decide keep/kill/demote against the baseline. Usage: /memory:audit-check [session-glob]",
+		handler: async (args, ctx) => {
+			const root = resolveMemoryRoot();
+			if (!root) return;
+			const measured = await measureMemory({ root, glob: args.trim() || undefined, write: true });
+			if (!measured) return;
+			const template = loadPrompt(
+				"audit-check",
+				"Re-measure, compare to BASELINE.md, and write CHECK.md with keep/kill/demote per proposal.",
+			);
+			ctx.ui.notify(`Tables: ${measured.tables ?? "not written"}`, "info");
+			await pi.sendUserMessage(template.replace("{{SUMMARY}}", measured.summary));
 		},
 	});
 
@@ -2395,6 +2572,11 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				}
 			}
 		}
+
+		// #92: resolve the cadence once per session. Discovery already ran, so a
+		// project session gets its own root; otherwise the agent root.
+		const audit = refreshAuditState(autoDiscoveredRoot ?? getAgentMemoryRoot());
+		if (audit?.due) ctx.ui.notify(`Memory audit due — ${audit.reason}. Run /memory:audit`, "warning");
 
 		// #51: footer shows the active agent; backfill may have just minted identity,
 		// so apply after the backfill + pull blocks have settled.

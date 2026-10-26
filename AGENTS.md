@@ -52,32 +52,15 @@ Pi loads this extension from `~/.pi/agent/extensions/pi-agent-memory` (symlinked
 
 ## Files
 
-```
-pi-agent-memory/
-  index.ts              Extension entry: 7 tools, 15 commands, 2 hooks (+ 13 modules by concern)
-  prompts/
-    system.md           Memory system instructions injected into every turn
-    startwork.md        /startwork ritual instructions
-    endwork.md          /endwork ritual instructions
-    init-memory.md      /memory:init prompt (future use)
-    legacy/
-      mem_system_prompt.md  Archived Letta-era protocol; canonical is prompts/system.md
-  README.md             Quick start, architecture overview
-  VMA.md                Vision, Mission, Aims — Phase 1 done, Phase 2 backlog
+Four entry points: `pi-agent-memory/index.ts` (tools, commands, hooks), `pi-agent-memory/prompts/`
+(`system.md` injected every turn; the startwork, endwork, audit, consolidate, audit-check and
+init-memory rituals), `pi-agent-memory/scripts/memory-audit.mjs` (the measurement engine), and this
+file.
 
-SPEC_v4.md              Canonical spec at repo root
-AGENTS.md               This file
-docs/                   Design + planning (Gate 1/2 deliverables)
-  DATA-MODEL.md         Entities, relationships, invariants (revised 2026-08-20)
-  TECHNICAL.md          Implementation-accurate engineer reference (2026-08-24)
-  EXPLAINED.md          Plain-language guide: zones, entities, session flow
-  WBS.md                Work breakdown structure
-archive/                Stale/superseded docs (gitignored, local only; history in git)
-.memory/                Project memory (local git, no remote)
-  reference/
-    status.md           Operational logbook
-    gameplan.md         Phased plan applying methodology gates
-```
+Repo tree, module map and what each module owns: `docs/TECHNICAL.md` §9. Design and planning:
+`docs/DATA-MODEL.md`, `docs/EXPLAINED.md`, `docs/WBS.md`, `docs/IMPROVEMENT-DRAFTS.md`. Canonical spec:
+`SPEC_v4.md`. Project memory lives in `.memory/` (`reference/status.md`, `wip.md`,
+`session/latest.md`).
 
 ## Architecture
 
@@ -101,59 +84,60 @@ Session workflow:
   /endwork → commit, clear sessionMemoryRoot
 ```
 
-## Tools (7)
+## Tools and commands
 
-| Tool | Resolves root via |
-|------|-------------------|
-| `memory_tree` | optional root param → session root → agent root |
-| `memory_read` | optional root param → session root → agent root |
-| `memory_write` | optional root param → session root → agent root |
-| `memory_search` | optional root param → session root → agent root |
-| `memory_status` | optional root param → session root → agent root |
-| `memory_sync_config` | (global config — get/set sync policy) |
-| `memory_recall` | (no root — searches Pi session JSONL) |
-| `super_sessions_analyze` | (separate extension) |
-| `super_sessions_synthesize` | (separate extension) |
+Eight tools, eighteen commands, two hooks. The tables, the root-resolution chain, the `system/` write
+guard and the hook behaviour are in `docs/TECHNICAL.md` §6. Two surfaces matter here day to day: the
+canonical state filenames in `## Rules`, and the maintenance loop below.
 
-## Commands (15)
+## Maintenance loop (#92)
 
-| Command | Namespace |
-|---------|-----------|
-| `/agent:init` | agent: |
-| `/agent:promote` | agent: |
-| `/agent:switch` | agent: |
-| `/agent:sync` | agent: |
-| `/agent:pull [uuid]` | agent: |
-| `/startwork` | (bare) |
-| `/endwork` | (bare) |
-| `/remember` | (bare) |
-| `/memory:init` | memory: |
-| `/memory:tree` | memory: |
-| `/memory:read` | memory: |
-| `/memory:search` | memory: |
-| `/memory:recall` | memory: |
-| `/memory:sync-config` | memory: |
-| `/memory:status` | memory: |
+Memory only grows unless something measures and prunes it. Before this loop existed,
+cold start had gone from a 2.0K mean in April 2026 to 8.0K in October, and one audit had
+run in a month on one of twenty projects.
+
+```
+memory_audit (free)  ──▶  /memory:audit      proposals, applies nothing
+                              │ San approves by id
+                              ▼
+                          /memory:consolidate  one memory_write per proposal + BASELINE.md
+                              │ ~10 sessions later
+                              ▼
+                          /memory:audit-check  keep / kill / demote, written to CHECK.md
+```
+
+- **Measurement engine:** `scripts/memory-audit.mjs`. Session JSONL is the source: first-turn
+  `usage.input` gives the real cold start, `memory_read` calls give the read trail, bash
+  signatures give the rediscovery count. No model calls, no new storage (#34's sidecar is
+  redundant).
+- **Cadence:** derived, never stored. `audit.ts` reads the last commit touching
+  `project_insights/audit` and counts session files dated after it. Due at 20 sessions or 30
+  days; the notice appears in `memory_status` and as one line in the system prompt.
+- **Why a notice and not a cron:** a cron comments on nothing. The line reaches the model
+  inside the turn, and the model is the one who can run the loop.
 
 ## Extension Points (Phase 2 candidates)
 
-These are intentionally absent in Phase 1. The methodology says grow by extension, so Phase 2 adds hooks rather than modifying existing logic:
-
-- `beforeMemoryWrite` hook — validate/censor before write
-- `afterMemoryCommit` hook — push to remote, trigger indexing
-- `resolveMemoryRoot` plugin — custom root resolution (for auto-discovered org memory)
-- Archival storage backend — pluggable embedder + vector store
+Four hooks are absent in Phase 1 by design, so Phase 2 extends rather than modifies: `beforeMemoryWrite`,
+`afterMemoryCommit`, a `resolveMemoryRoot` plugin, and an archival storage backend. What each would take:
+`docs/IMPROVEMENT-DRAFTS.md` §6.
 
 ## Rules
 
 - Node built-ins only (`fs`, `path`, `os`, `child_process`). Zero npm dependencies.
 - TypeBox for parameter schemas (pi SDK requirement)
-- TypeScript — entry `index.ts` + 13 modules by concern (sync, identity, discovery, paths, backlinks, session-search, search-sessions, ranked-search, context-budget, gitignore, handoff, status, project-lookup). Zero npm dependencies.
+- TypeScript — entry `index.ts` + 14 modules by concern (sync, identity, discovery, paths, backlinks, session-search, search-sessions, ranked-search, context-budget, gitignore, handoff, status, project-lookup, audit). Zero npm dependencies.
 - `memory_write` is always an atomic git commit
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo. The old "local-only, no remote" rule was superseded by the one-store decision (#17)
 - Session root cleared on session_start hook — no cross-session leakage
 - `~` in root params expanded to home directory
 - Canonical state filenames — `reference/status.md` (durable state), `wip.md` (in-flight scratch), `session/latest.md` (rolling handoff) — distinct purposes, never overlap. Authoritative text in `pi-agent-memory/prompts/system.md`.
+
+## Procedures
+
+- **Inline scripts break on quoting more often than they work.** A quoted `node -e "` failed 117 times
+  across 87 sessions and `python3 - <<EOF` 72 times across 111 (`memory_audit`, 2026-10-23). Use the
+  shapes in `.memory/reference/procedures/inline-scripts.md` before writing one.
 
 ## Gotchas
 
