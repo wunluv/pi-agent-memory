@@ -298,9 +298,8 @@ memory_audit (free)  ──▶  /memory:audit      this project's numbers; propo
                           /memory:audit-check  keep / kill / demote, written to CHECK.md
 ```
 
-- **Scope (#99):** `/memory:audit` reports the project the session is standing in, plus the
-  active agent's Zone A, and carries the portfolio mean as one line of context.
-  `/memory:audit-global` widens to every project and every agent. A scoped `never fetched`
+- **Scope (#99, #100):** `/memory:audit` reports the project the session is standing in, plus the
+  active agent's Zone A. It reads no other project's sessions and prints no portfolio figure. `/memory:audit-global` widens to every project and every agent. A scoped `never fetched`
   claim is stated as "by this project's sessions" — a file read only from another project
   looks dead in a narrow view, and dead-looking is an argument for deletion.
 - **Measurement engine:** `scripts/memory-audit.mjs`. Session JSONL is the source: first-turn

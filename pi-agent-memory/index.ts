@@ -1592,7 +1592,7 @@ export default function (pi: ExtensionAPI) {
 			scope: Type.Optional(
 				Type.String({
 					description:
-						"'project' (default) reports this project's sessions and the active agent's Zone A, with the portfolio mean as one line of context. 'global' reports every project and every agent.",
+						"'project' (default) reports this project's sessions and the active agent's Zone A, and reads no other project. 'global' reports every project and every agent.",
 				}),
 			),
 		}),

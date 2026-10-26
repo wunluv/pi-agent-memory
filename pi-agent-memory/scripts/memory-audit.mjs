@@ -163,59 +163,6 @@ export function agentBudget(agentSystemDir, budget = DEFAULT_BUDGET) {
  * opts.minSessions   recurrence threshold for the signature tables (default 3)
  * opts.budget        Zone A token budget (default 2400)
  */
-/**
- * First-turn input tokens across the whole corpus, for the one line of context a
- * scoped run still owes the reader. Stops parsing each file at the first
- * assistant turn, so it costs a fraction of the full pass.
- */
-export function portfolioColdStart(sessionsRoot, glob) {
-	const fileRe = glob
-		? new RegExp("^" + String(glob).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$")
-		: null;
-	const inputs = [];
-	let sessions = 0;
-	let dirs = [];
-	try {
-		dirs = fs.readdirSync(sessionsRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-	} catch {
-		return null;
-	}
-	for (const dirName of dirs) {
-		let files = [];
-		try {
-			files = fs.readdirSync(path.join(sessionsRoot, dirName)).filter((f) => f.endsWith(".jsonl"));
-		} catch {
-			continue;
-		}
-		for (const f of files) {
-			if (fileRe && !fileRe.test(f)) continue;
-			sessions++;
-			let lines;
-			try {
-				lines = fs.readFileSync(path.join(sessionsRoot, dirName, f), "utf8").split("\n");
-			} catch {
-				continue;
-			}
-			for (const line of lines) {
-				if (!line.trim()) continue;
-				let d;
-				try {
-					d = JSON.parse(line);
-				} catch {
-					continue;
-				}
-				if (d.type !== "message" || !d.message || d.message.role !== "assistant") continue;
-				const usage = d.message.usage || {};
-				if (!usage.input) continue; // match runAudit: first assistant turn WITH usage
-				inputs.push(usage.input);
-				break;
-			}
-		}
-	}
-	const sorted = inputs.sort((a, b) => a - b);
-	return { sessions, measured: sorted.length, mean: mean(sorted), p50: pct(sorted, 0.5), p90: pct(sorted, 0.9) };
-}
-
 export function runAudit(opts = {}) {
 	const sessionsRoot = opts.sessionsRoot || path.join(os.homedir(), ".pi", "agent", "sessions");
 	const agentsDir = opts.agentsDir || path.join(os.homedir(), ".pi", "agents");
@@ -233,6 +180,12 @@ export function runAudit(opts = {}) {
 	 * fetched only from another project looks dead here, and a dead-looking file
 	 * is an argument for deletion. When scoped, that claim is stated as what it
 	 * is — not fetched by THIS project's sessions.
+	 *
+	 * A scoped run does not read other projects' sessions at all (#100). The
+	 * earlier form added a portfolio mean as "context"; it cost a second pass
+	 * over every session directory, and it invited reading a 594-session average
+	 * as if it were the local number. The local audit answers a local question;
+	 * /memory:audit-global is the one that answers the wide one.
 	 */
 	const projectFilter = opts.project ? String(opts.project).replace(/\/+$/, "") : "";
 	const fileRe = glob
@@ -400,7 +353,6 @@ export function runAudit(opts = {}) {
 	return {
 		scope: {
 			project: projectFilter || null,
-			portfolio: projectFilter ? portfolioColdStart(sessionsRoot, glob) : null,
 		},
 		totals: {
 			sessions: [...projects.values()].reduce((n, m) => n + m.sessions, 0),
@@ -450,20 +402,13 @@ export function formatSummary(a) {
 	if (!a) return "No sessions found.";
 	const lines = [];
 	const t = a.totals;
-	const scope = a.scope || { project: null, portfolio: null };
+	const scope = a.scope || { project: null };
 	const scoped = !!scope.project;
 	const where = scoped ? "this project" : "all sessions";
 
 	lines.push(
 		`Cold start (${where}): mean ${t.mean}, p50 ${t.p50}, p90 ${t.p90}, max ${t.max} tokens over ${t.measured} of ${t.sessions} sessions.`,
 	);
-	// A scoped run still owes the reader the portfolio number, because a local
-	// mean means nothing without knowing whether the local repo is light or heavy.
-	if (scoped && scope.portfolio) {
-		lines.push(
-			`Portfolio for comparison: mean ${scope.portfolio.mean}, p90 ${scope.portfolio.p90} over ${scope.portfolio.measured} sessions. /memory:audit-global for all of it.`,
-		);
-	}
 	const first = a.trend[0];
 	const last = a.trend[a.trend.length - 1];
 	if (first && last && first.month !== last.month) {

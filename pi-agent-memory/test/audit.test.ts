@@ -226,7 +226,7 @@ assert.equal(cmdSignature("ssh mojah2 'git --git-dir=/x log'"), "ssh mojah2 Q");
 	assert.equal(runAudit({ sessionsRoot: path.join(s.root, "missing") }), null);
 }
 
-// ─── project scoping: the local report, with the portfolio as context ───────
+// ─── project scoping: the local report answers a local question ────────────
 
 {
 	const s = makeSessions();
@@ -245,20 +245,18 @@ assert.equal(cmdSignature("ssh mojah2 'git --git-dir=/x log'"), "ssh mojah2 Q");
 	assert.equal(local.totals.sessions, 6, "the project's own dirs, including one nested below it");
 	assert.equal(local.totals.mean, 8000, "only this project's usage");
 	assert.equal(local.cost.length, 1, "only this project appears in the cost table");
-	assert.equal(local.scope.portfolio.sessions, 9, "the portfolio figure still counts everything");
-	assert.equal(local.scope.portfolio.mean, 6333, "and averages the other project in");
+	assert.equal(local.scope.portfolio, undefined, "a local run does not scan the portfolio (#100)");
 
 	const text = formatSummary(local);
 	assert.ok(text.includes("Cold start (this project)"), text);
-	assert.ok(text.includes("Portfolio for comparison"), "the local mean is given context");
-	assert.ok(text.includes("/memory:audit-global"), "and names the way to widen it");
+	assert.ok(!text.includes("Portfolio for comparison"), "no portfolio figure leaks into a local report");
+	assert.ok(!text.includes("/memory:audit-global"), "and no pointer to the wide run");
 	assert.ok(text.includes("Trend (this project)"), text);
 	assert.ok(!text.includes("Heaviest projects"), "a one-project report has no ranking to show");
 
 	// A portfolio run stays as it was: no scope words, and it ranks projects.
 	const global = runAudit({ sessionsRoot: s.root, agentsDir: path.join(s.root, "no-agents"), minSessions: 1 });
 	assert.equal(global.scope.project, null);
-	assert.equal(global.scope.portfolio, null);
 	assert.equal(global.totals.sessions, 9);
 	const globalText = formatSummary(global);
 	assert.ok(globalText.includes("Cold start (all sessions)"), globalText);
