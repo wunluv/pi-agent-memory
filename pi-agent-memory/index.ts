@@ -371,6 +371,68 @@ function loadProjectSystemContext(root: string, budget = 4000): string | null {
 }
 
 /** Build a formatted tree view for a directory under a given root */
+/**
+ * #85: the canonical state files, in the order a session reaches for them. This
+ * follows #82's rule rather than keeping a second hardcoded list: `session/latest.md`
+ * is the state file, `wip.md` is resume state, and `reference/status.md` retired.
+ * A name added here must also be in the convention, or the tree will advertise
+ * files nobody is told to write.
+ */
+const CANONICAL_STATE_FILES: Array<{ path: string; label: string }> = [
+	{ path: SESSION_HANDOFF_PATH, label: "current state, decisions, next actions" },
+	{ path: "wip.md", label: "resume state" },
+];
+
+/**
+ * #85: how far behind the newest commit a state file has to be before it is
+ * marked stale. Measured against the newest commit in the root, never wall
+ * clock, so a dormant project whose state matches its last commit is not nagged.
+ */
+const STALE_AFTER_DAYS = 14;
+
+/** Date a memory file was last written: frontmatter first, mtime as fallback. */
+function memoryFileDate(root: string, relPath: string): string {
+	try {
+		const fm = parseFrontmatter(fs.readFileSync(path.join(root, relPath), "utf-8"));
+		const fromFm = (fm.updated || fm.created || "").slice(0, 10);
+		if (/^\d{4}-\d{2}-\d{2}$/.test(fromFm)) return fromFm;
+	} catch {
+		// no readable frontmatter — fall through to the file's mtime
+	}
+	try {
+		return fs.statSync(path.join(root, relPath)).mtime.toISOString().slice(0, 10);
+	} catch {
+		return "";
+	}
+}
+
+function daysBetween(later: string, earlier: string): number {
+	const ms = Date.parse(`${later}T00:00:00Z`) - Date.parse(`${earlier}T00:00:00Z`);
+	return Math.round(ms / 86_400_000);
+}
+
+/**
+ * #85: a pinned header naming the canonical state files with their dates, so rot
+ * announces itself while browsing instead of needing a git command to discover.
+ * Renders nothing when the root holds no canonical state file: no empty header.
+ */
+function renderCanonicalStateBlock(root: string): string {
+	const newestCommit = git(["log", "-1", "--format=%cs"], root).stdout.trim();
+	const rows: string[] = [];
+	for (const { path: relPath, label } of CANONICAL_STATE_FILES) {
+		if (!fs.existsSync(path.join(root, relPath))) continue;
+		const date = memoryFileDate(root, relPath);
+		const behind = newestCommit && date ? daysBetween(newestCommit, date) : 0;
+		const stale = behind > STALE_AFTER_DAYS;
+		rows.push(
+			`  ${relPath}${date ? ` — ${date}` : ""} — ${label}` +
+				(stale ? ` — STALE (${behind} days behind the newest commit)` : ""),
+		);
+	}
+	if (rows.length === 0) return "";
+	return `Canonical state files:\n${rows.join("\n")}\n\n`;
+}
+
 function buildTreeView(dirPath: string, root: string): string {
 	const targetDir = dirPath ? path.join(root, dirPath) : root;
 
@@ -423,7 +485,10 @@ function buildTreeView(dirPath: string, root: string): string {
 	}
 
 	walk(targetDir, 0);
-	return lines.length > 0 ? lines.join("\n") : "(empty)";
+	// #85: the pinned block describes the root's canonical state, so it belongs on a
+	// root listing only; a subtree listing names one place and needs no header.
+	const header = dirPath ? "" : renderCanonicalStateBlock(root);
+	return header + (lines.length > 0 ? lines.join("\n") : "(empty)");
 }
 
 /** Format wikilinks for display */
@@ -916,49 +981,13 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 		// project.json — the project's immutable soul identity (uuid only; name/path are registry-owned)
 		const uuid = ensureProjectUuid(memoryPath);
 
-		const now = new Date().toISOString().split("T")[0];
-		const projectName = path.basename(resolvedPath);
-
-		// #47: project system/ layer — private context (identity, agreements, memory
-		// rules), the Zone B counterpart of Zone A's system/. Stub only — never
-		// clobbers an existing system/index.md.
+		// #84: directories, identity and git — no stub files. A stub full of "TBD" reads
+		// like content in every memory_tree, goes stale silently, and makes absence
+		// useless as a signal. `system/` still exists; its index is written when there
+		// is something true to put in it.
 		fs.mkdirSync(path.join(memoryPath, "system"), { recursive: true });
-		const systemIndexPath = path.join(memoryPath, "system", "index.md");
-		if (!fs.existsSync(systemIndexPath)) {
-			const systemContent =
-				`# ${projectName} — Project Context\n\n**Last updated:** ${now}\n\n` +
-				`## Identity\n- What this project is, who it serves, where it lives\n\n` +
-				`## Working Agreements\n- How we work here (rituals, review patterns, communication)\n\n` +
-				`## Memory Rules\n- What gets written where (session/latest.md, wip.md, decisions/, observations/)\n\n` +
-				`## Eagle Eye\n- See [[reference/index]] for the current state and priorities\n`;
-			writeMemoryFile("system/index.md", generateFrontmatter(`${projectName} project context (private)`, ["context", "system"], 4) + systemContent, memoryPath);
-		}
 
-		if (isOrg) {
-			// #82: a child with its own memory root owns its own state, so the row
-			// points at that root rather than at a status file the org root would
-			// have to keep in sync. Children without a memory root say so.
-			const indexContent = `# ${projectName} — Project Index\n\n**Last updated:** ${now}\n\n## Sub-Projects\n\n| Sub-Project | Memory root |\n|---|---|\n${
-				subProjects
-					.map((sp) =>
-						fs.existsSync(path.join(resolvedPath, sp, ".memory"))
-							? `| ${sp} | \`${sp}/.memory/\` |`
-							: `| ${sp} | *(none — state goes in this root at \`reference/${sp}/\`)* |`,
-					)
-					.join("\n")
-			}\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
-			writeMemoryFile("reference/index.md",
-				generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
-
-			const strategyContent = `# ${projectName} — Strategy\n\n**Last updated:** ${now}\n\n## Current Priorities\n\nTBD\n\n## Dependency Map\n\nTBD\n\n## Revenue / Budget\n\nTBD\n`;
-			writeMemoryFile("reference/strategy.md",
-				generateFrontmatter(`${projectName} strategy and roadmap`, ["strategy"], 5) + strategyContent, memoryPath);
-		} else {
-			const indexContent = `# ${projectName}\n\n**Last updated:** ${now}\n\n## Status\n\nState lives in \`session/latest.md\` — written at \`/endwork\`, not yet written.\n\n## Priority Stack\n\n1. TBD\n2. TBD\n3. TBD\n`;
-			writeMemoryFile("reference/index.md",
-				generateFrontmatter(`${projectName} project index`, ["index", "status"], 5) + indexContent, memoryPath);
-		}
-
+		const projectName = path.basename(resolvedPath);
 		git(["add", "-A"], memoryPath);
 		git(["commit", "-m", `init: Bootstrap .memory/ for ${projectName}`], memoryPath);
 
@@ -2096,14 +2125,17 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 				ctx.ui.notify(
 					`\u2705 Organisation memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: org with ${result.subProjects.length} sub-projects\n` +
-					`   Next: edit system/index.md (project context) and strategy.md; each child with its own .memory/ keeps its own state in session/latest.md`,
+					`   Nothing is stubbed (#84). Write reference/index.md (the sub-project registry) and\n` +
+					`   strategy.md when they are true; each child with its own .memory/ keeps its state\n` +
+					`   in session/latest.md`,
 					"success",
 				);
 			} else {
 				ctx.ui.notify(
 					`\u2705 Project memory initialized at ${result.memoryPath}\n` +
 					`   Pattern: standalone\n` +
-					`   Next: edit system/index.md (project context). State goes to session/latest.md at /endwork.`,
+					`   Nothing is stubbed (#84). Write system/index.md (project context) when it is true;\n` +
+					`   state goes to session/latest.md at /endwork, and its absence until then is the signal`,
 					"success",
 				);
 			}
@@ -2135,6 +2167,14 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 							? `\n*(missing ${handoff.missingSections.join(", ")})*`
 							: "") +
 						`\n${handoff.content}`,
+					);
+				} else {
+					// #84: absence is a trustworthy signal now that no bootstrap writes stubs.
+					// One plain statement, never a refusal — the human decides whether to write
+					// state before starting.
+					parts.push(
+						`**No state file yet** — nothing has been written to \`${SESSION_HANDOFF_PATH}\`. ` +
+						`The first \`/endwork\` creates it.`,
 					);
 				}
 				parts.push(tree);
