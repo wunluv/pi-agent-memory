@@ -1,9 +1,15 @@
 /**
  * Zone A memory sync engine — issue #8.
  *
- * Extension-level async push (no git hooks), pull --rebase --autostash,
- * never force. Config at ~/.pi/memory-sync.json (mode 600). Server repos
- * named by agent UUID. See SPEC_v4 §2.2.
+ * Extension-level async push, pull --rebase --autostash, never force. Config at
+ * ~/.pi/memory-sync.json (mode 600). Server repos named by agent UUID. See
+ * SPEC_v4 §2.2.
+ *
+ * #98 added the missing half: the derived remote is now stored as `origin` with
+ * the branch tracking it, so `@{upstream}` resolves and divergence is visible;
+ * and a `post-commit` hook pushes detached, so a commit made by hand in a shell
+ * syncs like one made by memory_write. "No git hooks" was the original design
+ * and it was the fault: the remote was ephemeral, so nothing could observe it.
  *
  * Extracted from index.ts as a stable, testable public interface. All git
  * flows through an injected GitFn and all process spawning through injected
@@ -226,6 +232,7 @@ export function syncOnce(
 	}
 
 	if (opts.push === false) {
+		if (pulled) afterSuccessfulSync(env, repoPath, remoteUrl, branch);
 		return { ok: true, pulled, pushed: false, conflict: false, message: "pulled" };
 	}
 
@@ -239,6 +246,7 @@ export function syncOnce(
 	if (push.code !== 0) {
 		return { ok: false, pulled, pushed: false, conflict: false, message: (push.stderr || push.stdout || "push failed").trim() };
 	}
+	afterSuccessfulSync(env, repoPath, remoteUrl, branch);
 	return { ok: true, pulled, pushed: true, conflict: false, message: "synced" };
 }
 
@@ -258,6 +266,135 @@ export function syncPrivateOnce(
 ): SyncResult {
 	assertPrivateMemoryRemote(serverUrl, remoteUrl);
 	return syncOnce(env, repoPath, remoteUrl, timeoutMs, opts);
+}
+
+// ─── Origin tracking + sync-on-commit (#98) ──────────────────────────────────
+
+/**
+ * Marker written into the installed hook, so a re-install can recognise its own
+ * work and a foreign hook can be left alone.
+ */
+export const SYNC_HOOK_MARKER = "# pi-agent-memory: sync-on-commit";
+
+/**
+ * The post-commit hook body. Push happens detached so the commit returns at
+ * once; the rebase guard keeps `pull --rebase` from pushing every replayed
+ * commit; and every failure is swallowed into a log line, because the state
+ * that matters (ahead/behind) is read from git, not from this log.
+ */
+export function postCommitHookScript(): string {
+	return [
+		"#!/bin/sh",
+		SYNC_HOOK_MARKER + " (#98)",
+		"# Pushes HEAD to the tracked remote after any commit, including one made by",
+		"# hand in a shell. Detached so the commit is not held open; silent on failure.",
+		'gitdir=$(git rev-parse --git-dir 2>/dev/null) || exit 0',
+		'# a rebase replays commits; pushing each one is noise, the caller syncs after',
+		'[ -d "$gitdir/rebase-merge" ] && exit 0',
+		'[ -d "$gitdir/rebase-apply" ] && exit 0',
+		'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0',
+		'[ -n "$branch" ] || exit 0',
+		'# the remote may be named anything — a pre-#98 repo may carry "memory-sync"',
+		'remote=$(git config --get "branch.$branch.remote" 2>/dev/null)',
+		'[ -n "$remote" ] || remote=origin',
+		'url=$(git config --get "remote.$remote.url" 2>/dev/null) || exit 0',
+		'[ -n "$url" ] || exit 0',
+		'log="$gitdir/pi-sync-hook.log"',
+		'(',
+		'  git push --quiet "$remote" "$branch" >>"$log" 2>&1',
+		'  echo "push $remote/$branch: $?" >>"$log"',
+		') >/dev/null 2>&1 &',
+		'exit 0',
+	].join("\n") + "\n";
+}
+
+export type HookInstall = "installed" | "present" | "skipped-foreign" | "skipped-no-git";
+
+/**
+ * Install the sync-on-commit hook. Never overwrites a `post-commit` this
+ * extension did not write — a repo may already push somewhere else on commit,
+ * and silently replacing that would be a worse fault than the one being fixed.
+ */
+export function installSyncHook(env: SyncEnv, repoPath: string): HookInstall {
+	const dir = env.git(["rev-parse", "--git-dir"], repoPath);
+	if (dir.code !== 0 || !dir.stdout.trim()) return "skipped-no-git";
+	const gitDir = path.isAbsolute(dir.stdout.trim()) ? dir.stdout.trim() : path.join(repoPath, dir.stdout.trim());
+	const hookPath = path.join(gitDir, "hooks", "post-commit");
+	try {
+		if (fs.existsSync(hookPath)) {
+			const existing = fs.readFileSync(hookPath, "utf-8");
+			if (existing.includes(SYNC_HOOK_MARKER)) return "present";
+			return "skipped-foreign";
+		}
+		fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+		fs.writeFileSync(hookPath, postCommitHookScript(), { mode: 0o755 });
+		fs.chmodSync(hookPath, 0o755);
+		return "installed";
+	} catch {
+		return "skipped-no-git";
+	}
+}
+
+/**
+ * Name the derived remote so the branch can track it. Adopts a remote that
+ * already points at the derived URL under any name (a pre-#98 repo may carry
+ * `memory-sync`), rather than adding a second remote to the same place.
+ *
+ * Refuses to touch an `origin` pointing anywhere else, including one that used to
+ * be derived and has since been repointed by hand. Returns the remote name now
+ * holding the derived URL, or null.
+ */
+export function ensureTrackingRemote(env: SyncEnv, repoPath: string, remoteUrl: string): string | null {
+	const list = env.git(["remote"], repoPath);
+	const names = list.code === 0 ? list.stdout.split("\n").map((n) => n.trim()).filter(Boolean) : [];
+	for (const name of names) {
+		const url = env.git(["config", "--get", `remote.${name}.url`], repoPath);
+		if (url.code === 0 && url.stdout.trim() === remoteUrl) return name;
+	}
+	if (!names.includes("origin")) {
+		return env.git(["remote", "add", "origin", remoteUrl], repoPath).code === 0 ? "origin" : null;
+	}
+	return null;
+}
+
+/**
+ * Name the derived remote `origin` and make the branch track it, so `@{upstream}`
+ * resolves and `memory_status` can report ahead/behind. Seeding the remote-tracking
+ * ref from HEAD costs no network and is accurate only right after a successful
+ * pull or push — which is exactly where this is called from.
+ */
+export function ensureOriginTracking(
+	env: SyncEnv,
+	repoPath: string,
+	remoteUrl: string,
+	branch: string,
+): boolean {
+	const remote = ensureTrackingRemote(env, repoPath, remoteUrl);
+	if (!remote) return false;
+	env.git(["config", `branch.${branch}.remote`, remote], repoPath);
+	env.git(["config", `branch.${branch}.merge`, `refs/heads/${branch}`], repoPath);
+	const head = env.git(["rev-parse", "HEAD"], repoPath);
+	if (head.code === 0 && head.stdout.trim()) {
+		env.git(["update-ref", `refs/remotes/${remote}/${branch}`, head.stdout.trim()], repoPath);
+	}
+	return true;
+}
+
+/**
+ * Everything a completed sync should leave behind: a tracked origin (so the
+ * divergence check works) and the hook (so the next hand-made commit syncs).
+ */
+function afterSuccessfulSync(env: SyncEnv, repoPath: string, remoteUrl: string, branch: string): void {
+	try {
+		ensureOriginTracking(env, repoPath, remoteUrl, branch);
+	} catch {
+		// tracking is an observability aid, never a reason to fail a sync
+	}
+	try {
+		installSyncHook(env, repoPath);
+	} catch {
+		// same
+	}
 }
 
 // ─── Async push (fire-and-forget) ───────────────────────────────────────────────
@@ -299,6 +436,15 @@ export const PUSH_CHILD_SCRIPT = [
  * immediately and never waits on the network. The child always exits 0.
  */
 export function pushAsync(env: SyncEnv, repoPath: string, remoteUrl: string): void {
+	// #98: the remote is named and the hook is installed before the child spawns,
+	// so a commit made by hand in a shell syncs like one made by memory_write.
+	// No tracking ref is seeded here — only a real push knows where the remote is.
+	try {
+		ensureTrackingRemote(env, repoPath, remoteUrl);
+		installSyncHook(env, repoPath);
+	} catch {
+		// observability aids never fail a write
+	}
 	try {
 		fs.mkdirSync(path.dirname(env.logPath), { recursive: true });
 	} catch {

@@ -108,7 +108,7 @@ bound when present).
 
 Sync is off entirely when `server_url` is unset.
 
-**Derived remotes** (never user-managed; no persistent `git remote` on any repo):
+**Derived remotes** (derived from config, written by the extension, never edited by hand):
 
 | Target | URL |
 |--------|-----|
@@ -118,8 +118,24 @@ Sync is off entirely when `server_url` is unset.
 
 Sanitization: `[^a-zA-Z0-9._-]+` → `-`. **Guard:** every call passes
 `assertPrivateMemoryRemote` — URL must start with `<server_url>/` and end
-`.git`. Fetch/push go by explicit URL argument (`git pull <url> <branch>`),
-so `git remote -v` stays empty on all local repos.
+`.git`.
+
+**`origin` and divergence (#98).** After a successful pull or push the derived
+URL is stored as `origin`, the branch tracks it, and `refs/remotes/origin/<b>` is
+seeded from HEAD (no network). Before #98 the remote was passed as an argument and
+never stored, so `@{upstream}` never resolved — which meant the divergence check
+in `status.ts` (`rev-list --left-right --count HEAD...@{upstream}`) could never
+return a number, and `memory_status` reported healthy on a repo whose commits had
+never left the machine. An `origin` pointing anywhere other than the derived URL
+is never repointed.
+
+**Sync-on-commit hook (#98).** Each memory repo gets a `post-commit` hook that
+pushes detached, so a commit made by hand in a shell reaches the server exactly
+like one made by `memory_write`. It skips a rebase in progress (the caller syncs
+after), skips when there is no `origin`, and is never written over a
+`post-commit` this extension did not install. Failures stay silent in the hook;
+the visible state is ahead/behind in `memory_status`, which names unpushed commits
+in words.
 
 **Push mechanics** (`pushAsync`, `sync.ts`): after a gated commit, a detached
 node child runs `pull --rebase --autostash <remote> <branch>` then `push`,

@@ -214,4 +214,32 @@ function initMemoryRepo(memoryPath: string): void {
 	assert.ok(r.checkRemote!.message.includes("no remote"));
 }
 
+// ─── #98: an unpushed commit is announced, not left to be inferred ──────────
+
+{
+	const env = makeEnv();
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), "status-98-"));
+	const server = fs.mkdtempSync(path.join(os.tmpdir(), "status-98-server-"));
+	cp.spawnSync("git", ["init", "--bare", "-b", "main", server], { cwd: server });
+	initMemoryRepo(work);
+	git(["branch", "-M", "main"], work);
+	git(["remote", "add", "origin", server], work);
+	git(["push", "-u", "origin", "main"], work);
+
+	const clean = gatherStatus(env, { root: work, activeAgent: null });
+	assert.equal(clean.ahead, 0, "in sync to start");
+	assert.ok(!renderStatus(clean).includes("not on the server"), "no warning when in sync");
+
+	// The failure this exists for: a commit made by hand, never pushed.
+	fs.writeFileSync(path.join(work, "later.md"), "x\n");
+	git(["add", "-A"], work);
+	git(["commit", "-m", "made-by-hand"], work);
+
+	const dirty = gatherStatus(env, { root: work, activeAgent: null });
+	assert.equal(dirty.ahead, 1, "one commit ahead");
+	const rendered = renderStatus(dirty);
+	assert.ok(rendered.includes("1 commit(s) on this root are not on the server"), rendered);
+	assert.ok(rendered.includes("/agent:sync"), rendered);
+}
+
 console.log("status.test.ts — all assertions passed");

@@ -53,6 +53,9 @@ export interface StatusReport {
 	gitRepo: boolean;
 	branch: string | null;
 	aheadBehind: string | null;
+	/** Parsed from aheadBehind (#98) — commits on this repo that are not on the server. */
+	ahead: number;
+	behind: number;
 	lastCommit: string | null;
 	lastSync: string[];  // attributed log lines for this root (tail)
 	logEntries: number;  // total lines in the push log
@@ -81,6 +84,8 @@ const NO_ROOT: StatusReport = {
 	aheadBehind: null,
 	lastCommit: null,
 	lastSync: [],
+	ahead: 0,
+	behind: 0,
 	logEntries: 0,
 	checkRemote: null,
 };
@@ -171,6 +176,8 @@ export function gatherStatus(env: StatusEnv, opts: StatusOptions): StatusReport 
 	let gitRepo = false;
 	let branch: string | null = null;
 	let aheadBehind: string | null = null;
+	let ahead = 0;
+	let behind = 0;
 	let lastCommit: string | null = null;
 	try {
 		gitRepo = fs.existsSync(path.join(opts.root, ".git"));
@@ -183,7 +190,11 @@ export function gatherStatus(env: StatusEnv, opts: StatusOptions): StatusReport 
 		const ab = env.git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], opts.root);
 		if (ab.code === 0) {
 			const [a, be] = ab.stdout.trim().split(/\s+/);
-			if (a !== undefined && be !== undefined) aheadBehind = `ahead ${a}, behind ${be}`;
+			if (a !== undefined && be !== undefined) {
+				aheadBehind = `ahead ${a}, behind ${be}`;
+				ahead = Number(a) || 0;
+				behind = Number(be) || 0;
+			}
 		}
 		const lc = env.git(["log", "-1", "--date=short", "--pretty=format:%h %ad %s"], opts.root);
 		if (lc.code === 0 && lc.stdout.trim()) lastCommit = lc.stdout.trim();
@@ -229,6 +240,8 @@ export function gatherStatus(env: StatusEnv, opts: StatusOptions): StatusReport 
 		gitRepo,
 		branch,
 		aheadBehind,
+		ahead,
+		behind,
 		lastCommit,
 		lastSync,
 		logEntries,
@@ -251,6 +264,13 @@ export function renderStatus(r: StatusReport): string {
 	if (r.remoteUrl) lines.push(`Remote: ${r.remoteUrl}`);
 	if (r.gitRepo) {
 		lines.push(`Git: ${r.branch || "(no branch)"}${r.aheadBehind ? ` | ${r.aheadBehind}` : ""}`);
+		// #98: an unpushed commit is the failure this whole check exists for. Say
+		// it plainly instead of leaving it to be inferred from a count.
+		if (r.ahead > 0) {
+			lines.push(
+				`⚠  ${r.ahead} commit(s) on this root are not on the server. Run /agent:sync.`,
+			);
+		}
 		if (r.lastCommit) lines.push(`Last commit: ${r.lastCommit}`);
 	} else {
 		lines.push("Git: not a repo (memory_write will init on first write)");

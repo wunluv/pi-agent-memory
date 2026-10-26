@@ -26,6 +26,10 @@ import {
 	saveSyncConfig,
 	syncOnce,
 	PUSH_CHILD_SCRIPT,
+	SYNC_HOOK_MARKER,
+	installSyncHook,
+	ensureTrackingRemote,
+	ensureOriginTracking,
 	type GitFn,
 	type SyncEnv,
 } from "../sync.ts";
@@ -300,6 +304,122 @@ function commit(cwd: string, file: string, content: string, message: string): vo
 	});
 
 	assert.equal(git(["log", "--format=%s"], remote).stdout.trim(), "c1", "async push landed on the server");
+}
+
+// ─── #98: origin tracking, so divergence can be seen ─────────────────────────
+
+{
+	const env = makeEnv();
+	const server = mkTmp();
+	const work = mkTmp();
+	git(["init", "--bare", "-b", "main", server], server);
+	git(["init", "-b", "main"], work);
+	author(work);
+	commit(work, "a.md", "one", "c1");
+
+	const remoteUrl = server;
+	const res = syncOnce(env, work, remoteUrl, 20000);
+	assert.equal(res.ok, true, res.message);
+
+	assert.equal(
+		git(["config", "--get", "remote.origin.url"], work).stdout.trim(),
+		remoteUrl,
+		"the derived remote is named origin",
+	);
+	assert.equal(git(["config", "--get", "branch.main.remote"], work).stdout.trim(), "origin");
+	assert.equal(git(["config", "--get", "branch.main.merge"], work).stdout.trim(), "refs/heads/main");
+
+	// The whole point: the check that status.ts already ran now resolves.
+	const ab = git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], work);
+	assert.equal(ab.code, 0, "@{upstream} resolves after a sync");
+	assert.equal(ab.stdout.trim(), "0\t0", "in sync with the server");
+}
+
+// a pre-existing remote to the derived URL is adopted, not duplicated
+{
+	const env = makeEnv();
+	const work = mkTmp();
+	git(["init", "-b", "main"], work);
+	author(work);
+	commit(work, "a.md", "one", "c1");
+	git(["remote", "add", "memory-sync", "/tmp/derived.git"], work);
+
+	assert.equal(ensureTrackingRemote(env, work, "/tmp/derived.git"), "memory-sync", "adopted by name");
+	const remotes = git(["remote"], work).stdout.split("\n").filter(Boolean).sort();
+	assert.deepEqual(remotes, ["memory-sync"], "no duplicate remote added");
+	assert.equal(ensureOriginTracking(env, work, "/tmp/derived.git", "main"), true);
+	assert.equal(git(["config", "--get", "branch.main.remote"], work).stdout.trim(), "memory-sync");
+	assert.equal(git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], work).code, 0, "upstream resolves");
+}
+
+// a foreign origin is never repointed
+{
+	const env = makeEnv();
+	const work = mkTmp();
+	git(["init", "-b", "main"], work);
+	author(work);
+	commit(work, "a.md", "one", "c1");
+	git(["remote", "add", "origin", "https://github.com/someone/else.git"], work);
+
+	assert.equal(ensureTrackingRemote(env, work, "/tmp/derived.git"), null, "refused");
+	assert.equal(
+		git(["config", "--get", "remote.origin.url"], work).stdout.trim(),
+		"https://github.com/someone/else.git",
+		"left untouched",
+	);
+	assert.equal(ensureOriginTracking(env, work, "/tmp/derived.git", "main"), false);
+}
+
+// ─── #98: the sync-on-commit hook ────────────────────────────────────────────
+
+{
+	const env = makeEnv();
+	const work = mkTmp();
+	git(["init", "-b", "main"], work);
+	author(work);
+
+	assert.equal(installSyncHook(env, work), "installed", "first install");
+	const hookPath = path.join(work, ".git", "hooks", "post-commit");
+	assert.ok(fs.readFileSync(hookPath, "utf-8").includes(SYNC_HOOK_MARKER), "carries its marker");
+	assert.ok(fs.statSync(hookPath).mode & 0o100, "is executable");
+	assert.equal(installSyncHook(env, work), "present", "idempotent");
+
+	// A hook this extension did not write is never replaced.
+	const foreign = mkTmp();
+	git(["init", "-b", "main"], foreign);
+	author(foreign);
+	const foreignHook = path.join(foreign, ".git", "hooks", "post-commit");
+	fs.mkdirSync(path.dirname(foreignHook), { recursive: true });
+	fs.writeFileSync(foreignHook, "#!/bin/sh\necho mine\n", { mode: 0o755 });
+	assert.equal(installSyncHook(env, foreign), "skipped-foreign");
+	assert.ok(
+		fs.readFileSync(foreignHook, "utf-8").includes("echo mine"),
+		"foreign hook survives untouched",
+	);
+}
+
+// a commit made by hand in a shell reaches the server through the hook
+{
+	const env = makeEnv();
+	const server = mkTmp();
+	const work = mkTmp();
+	git(["init", "--bare", "-b", "main", server], server);
+	git(["init", "-b", "main"], work);
+	author(work);
+	commit(work, "a.md", "one", "c1");
+	syncOnce(env, work, server, 20000); // names origin, installs the hook
+
+	// No syncOnce, no memory_write — just a plain shell commit.
+	commit(work, "b.md", "two", "made-by-hand");
+
+	const deadline = Date.now() + 5000;
+	let landed = "";
+	while (Date.now() < deadline) {
+		landed = git(["log", "--format=%s"], server).stdout;
+		if (landed.includes("made-by-hand")) break;
+		cp.spawnSync("sleep", ["0.1"]);
+	}
+	assert.ok(landed.includes("made-by-hand"), `hand-made commit reached the server: ${landed.trim()}`);
 }
 
 console.log("sync.test.ts — all assertions passed");

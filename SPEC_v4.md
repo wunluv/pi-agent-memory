@@ -482,7 +482,8 @@ Consolidates the frozen Gate 2 interface (identity + sync + auto-discovery) with
 
 ### 2.2 Memory Sync (Zone A) — issue #8
 
-- **Engine: extension-level async push, no git hooks.** After a Zone A commit, when `push_on_commit` + `server_url` are set, a detached child runs `pull --rebase --autostash` then `push`; logs to `memory-repository-push.log`; always exits 0. Fire-and-forget, 60s ceiling, never SIGKILL git. The write never waits on the network.
+- **Engine: extension-level async push.** After a Zone A commit, when `push_on_commit` + `server_url` are set, a detached child runs `pull --rebase --autostash` then `push`; logs to `memory-repository-push.log`; always exits 0. Fire-and-forget, 60s ceiling, never SIGKILL git. The write never waits on the network.
+- **Divergence must be observable (#98).** The derived remote is stored (under `origin`, or an existing name already pointing at it) with the branch tracking it, so `@{upstream}` resolves and `memory_status` reports ahead/behind. A `post-commit` hook pushes detached, so a commit made by hand in a shell reaches the server like one made by `memory_write`. Before #98 the remote was passed only as an argument, so `@{upstream}` never resolved, the divergence check could not return a number, and status reported healthy on a repo whose commits had never left the machine. A compensating rule in Zone A said so in prose; the rule is retired.
 - **Conflict policy:** rebase, never force. Same-file conflict → abort push, leave both sides intact, log + notify at next session start; human resolves (gated write).
 - **Repo-role guard (frozen scope):** #8 pushes only the active agent's own Zone A repo. Zone B and org root sync = issue #24 (same engine, private-remote-only policy).
 - `/agent:pull [uuid]` — `git clone` `<server_url>/<uuid>.git`, verify `agent.json` uuid inside, re-apply author config + remote, prompt on name collision. No uuid + ssh server → list repos.
