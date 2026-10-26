@@ -23,7 +23,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const PINNED = new Set(["identity.md", "persona.md", "projects.md", "index.md"]);
+/**
+ * The pinned spine — must stay identical to PINNED_SYSTEM_BASENAMES in
+ * context-budget.ts. This file is plain .mjs so it cannot import the TS module;
+ * test/audit.test.ts asserts the two agree, and that assertion is the sync
+ * mechanism. `projects.md` left the spine in #97 (the index moved to
+ * knowledge/projects-active.md), so it is budgeted here like any other file.
+ */
+export const PINNED = new Set(["identity.md", "persona.md", "index.md"]);
 export const DEFAULT_BUDGET = 2400;
 
 const tsv = (rows) => rows.map((r) => r.join("\t")).join("\n") + "\n";
@@ -113,7 +120,13 @@ export function agentBudget(agentSystemDir, budget = DEFAULT_BUDGET) {
 		const { body, importance, updated } = auditFrontmatter(fs.readFileSync(abs, "utf8"));
 		return { rel: path.relative(agentSystemDir, abs), body, importance, updated, abs };
 	});
-	const rank = (a, b) => b.importance - a.importance || (b.updated || "").localeCompare(a.updated || "");
+	// Total order: importance, then recency, then path. The path tiebreaker keeps
+	// this identical to rankSystemFiles in context-budget.ts no matter what order
+	// the directory walk produced (#97).
+	const rank = (a, b) =>
+		b.importance - a.importance ||
+		(b.updated || "").localeCompare(a.updated || "") ||
+		a.rel.localeCompare(b.rel);
 	const pinned = files.filter((f) => PINNED.has(path.basename(f.rel))).sort(rank);
 	const budgeted = files.filter((f) => !PINNED.has(path.basename(f.rel))).sort(rank);
 	const cost = (f) => est(`\n=== system/${f.rel} ===\n${f.body}`);

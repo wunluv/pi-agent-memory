@@ -191,7 +191,7 @@ git; frontmatter `agent_id` is immutable after first write.
 session_start   → clear session root; syncOrgOnStart (2.5s fail-fast); auto-discover → cache root
 /startwork      → no-arg: use discovered root, begin (set session root, syncProjectOnStart, eagle-eye tree)
                 → named: resolve path → Case A (.memory exists: reconcile uuid, fork prompt)
-                             → Case B (registry/projects.md lookup)
+                             → Case B (registry, then knowledge/projects-active.md)
                              → Case C (offer bootstrap via /memory:init)
 /endwork        → verify state file (four sections); commit; clear session root
 ```
@@ -233,7 +233,7 @@ backlinks.ts       [[link]] extraction/traversal
 context-budget.ts  system/ injection budget + pinning (#36)
 handoff.ts         session handoff contract: .memory/session/latest.md (#50)
 status.ts          memory + sync health surface (#48)
-project-lookup.ts  system/projects.md fallback lookup, miss diagnosis (#65)
+project-lookup.ts  knowledge/projects-active.md fallback lookup, miss diagnosis (#65, #97)
 gitignore.ts       .gitignore excludes .memory/ on bootstrap
 audit.ts           maintenance cadence: last audit from git, sessions since (#92)
 prompts/           system.md (injected every turn), startwork, endwork, audit,

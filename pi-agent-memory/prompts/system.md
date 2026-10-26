@@ -59,8 +59,9 @@ or bump `importance`/`updated` instead of adding a near-duplicate. Zone B's `pro
 
 When the user wants to work on a project:
 
-1. They call `/startwork <project>` — you look up the project path from `system/projects.md`,
-   call `/startwork` with that path, and the session memory root is set to `<path>/.memory/`.
+1. They call `/startwork <project>` — the name resolves through the org registry, then through
+   `knowledge/projects-active.md` if the registry has no entry. You do not need to resolve the
+   path yourself; passing the name through is enough.
 
 2. All memory tools automatically use the session root for Zone B.
    No need to pass `root` on every call.

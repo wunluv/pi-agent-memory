@@ -2,8 +2,9 @@
 
 When the user types `/startwork [project]`:
 
-1. **Resolve project.** If a project name is given, look it up in `system/projects.md`
-   to find the path. If not found or not given, ask the user to select or provide a path.
+1. **Resolve project.** If a project name is given, it resolves through the org registry, then
+   `knowledge/projects-active.md` (the human-readable listing, on demand — not injected).
+   If not found or not given, ask the user to select or provide a path.
 
 2. **Set session root.** The command sets the session memory root to `<project-path>/.memory/`.
    All subsequent `memory_tree`, `memory_read`, `memory_write`, and `memory_search` calls

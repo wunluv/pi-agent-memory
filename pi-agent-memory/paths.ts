@@ -19,6 +19,31 @@ export const RESERVED_FILENAMES = new Set(["status", "wip", "index", "strategy",
 export const ZONE_A_TOP_LEVEL = new Set(["system", "knowledge"]);
 
 /**
+ * The human-readable project index — #97. It lives under `knowledge/`, the
+ * on-demand half of Zone A, because it is read once a session by a caller who
+ * asks "what is live?". Name resolution does not need it: `discovery.ts` walks
+ * up from cwd and the org registry holds every path.
+ *
+ * The legacy `system/projects.md` location is still read, so a root bootstrapped
+ * before #97 keeps resolving without a migration step.
+ */
+export const PROJECTS_INDEX_PATH = "knowledge/projects-active.md";
+export const LEGACY_PROJECTS_INDEX_PATH = "system/projects.md";
+
+/**
+ * Absolute path to the project index for an agent root, or null when the root
+ * carries neither the canonical nor the legacy location. Callers read and
+ * rewrite through here so the two locations can never disagree.
+ */
+export function resolveProjectsIndexPath(agentRoot: string): string | null {
+	for (const rel of [PROJECTS_INDEX_PATH, LEGACY_PROJECTS_INDEX_PATH]) {
+		const full = path.join(agentRoot, rel);
+		if (fs.existsSync(full)) return full;
+	}
+	return null;
+}
+
+/**
  * Return the offending top-level segment if a memory path targets Zone A outside
  * its allowed dirs, else null. Zone A holds identity (system/) + general
  * knowledge (knowledge/) only.

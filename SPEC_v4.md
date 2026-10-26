@@ -35,10 +35,10 @@ ZONE C — Session Archive (Pi-managed)             .pi/sessions/
     │   ├── human/                   # What the agent knows about the user
     │   │   ├── identity.md          # Background, motivations, drives
     │   │   └── preferences.md       # Communication style, work patterns
-    │   ├── projects.md              # Human-readable index ([[links]]); authoritative path lives in the org registry
     │   └── infrastructure.md        # Servers, services, tooling
     │
     └── knowledge/                   ← LAZY: general/personal knowledge (renamed from reference/, 2026-08)
+        ├── projects-active.md       # WHAT IS LIVE: the human list of active projects and their paths (#97)
         └── ...                      # philosophy, skills, tooling, general notes — project knowledge lives in Zone B
 ```
 
@@ -189,7 +189,6 @@ Token budget:
 | `system/persona.md` | ~150 | Identity, discipline, relationship |
 | `system/human/identity.md` | ~80 | User background, drives |
 | `system/human/preferences.md` | ~100 | Communication style, work patterns |
-| `system/projects.md` | ~60 | Lightweight project index with paths |
 | `system/infrastructure.md` | ~80 | Servers, services, tooling |
 | Memory header/footer | ~30 | Section markers |
 | **Total cold start** | **~850** | |
@@ -361,7 +360,7 @@ Bootstraps project memory (Zone B) in the given directory:
 Start of session ritual:
 
 1. **No argument** — discovers the nearest `.memory/` at or above cwd, excluding the `~/.pi` tree. If discovery walked up (the root's owner is not cwd), it **announces the binding first**, naming the parent root and cwd, and offers `/startwork .` when cwd carries a project signal (`.git`, `package.json`, `README.md`, `AGENTS.md`). Warns, never refuses: a cwd nested inside its own project is legitimate (#66)
-2. **A name** — resolves through the org registry (uuid-keyed), then Zone A `system/projects.md`. An entry with no path is reported as such; no probe is ever made against cwd (#65)
+2. **A name** — resolves through the org registry (uuid-keyed), then Zone A `knowledge/projects-active.md` (#97; legacy `system/projects.md` still read). An entry with no path is reported as such; no probe is ever made against cwd (#65)
 3. **A path** — resolves `<path>/.memory/`, offering `/memory:init` when it is absent
 4. Reconciles project registration by `project.json` uuid (#46) — including the move/fork dialog
 5. Sets the session memory root, then surfaces in order: `session/latest.md` handoff, the `reference/` tree, the recent memory delta, and project `system/` context (#47, #49, #50)

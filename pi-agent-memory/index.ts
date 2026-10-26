@@ -71,7 +71,7 @@ import {
 	type SyncEnv,
 } from "./sync";
 import { gatherStatus, renderStatus, type StatusEnv } from "./status";
-import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, zoneATopLevelViolation } from "./paths";
+import { canonicalizeMemoryPath, readMemoryFile, writeMemoryFile, zoneATopLevelViolation, resolveProjectsIndexPath, PROJECTS_INDEX_PATH } from "./paths";
 import { ensureMemoryIgnored } from "./gitignore";
 import {
 	discoveredByWalkingUp,
@@ -234,7 +234,8 @@ function isPathLike(input: string): boolean {
 /**
  * Look up a project by name. Authoritative source is the org registry's
  * uuid-keyed projects section (scanned by the mutable `name` field, #13);
- * falls back to parsing system/projects.md (the demoted human-readable index).
+ * falls back to parsing the project index (the demoted human-readable index),
+ * `knowledge/projects-active.md` since #97, legacy `system/projects.md` before.
  * Does NOT substring-match over prose — the caller must exclude path-like
  * inputs first (see isPathLike).
  *
@@ -248,8 +249,8 @@ function findProjectEntry(name: string): ProjectEntry | null {
 
 	const agentRoot = getAgentMemoryRoot();
 	if (!agentRoot) return null;
-	const projectsFile = path.join(agentRoot, "system", "projects.md");
-	if (!fs.existsSync(projectsFile)) return null;
+	const projectsFile = resolveProjectsIndexPath(agentRoot);
+	if (!projectsFile) return null;
 
 	const body = parseFrontmatter(fs.readFileSync(projectsFile, "utf-8")).body;
 	return findProjectEntryInBody(body, name);
@@ -997,7 +998,7 @@ function bootstrapMemory(resolvedPath: string): BootstrapResult | null {
 	}
 }
 
-/** Both absolute and ~-relative forms of a path, for projects.md rewrite. */
+/** Both absolute and ~-relative forms of a path, for project-index rewrite. */
 function pathForms(oldPath: string, newPath: string): Array<[string, string]> {
 	const forms: Array<[string, string]> = [[oldPath, newPath]];
 	const home = os.homedir();
@@ -1007,19 +1008,19 @@ function pathForms(oldPath: string, newPath: string): Array<[string, string]> {
 	return forms;
 }
 
-/** Best-effort: rewrite the path token for a project in system/projects.md (human index). */
+/** Best-effort: rewrite the path token for a project in the project index (human). */
 function updateProjectsMdPath(name: string, oldPath: string, newPath: string): void {
 	const agentRoot = getAgentMemoryRoot();
 	if (!agentRoot) return;
-	const projectsFile = path.join(agentRoot, "system", "projects.md");
-	if (!fs.existsSync(projectsFile)) return;
+	const projectsFile = resolveProjectsIndexPath(agentRoot);
+	if (!projectsFile) return;
 	try {
 		let content = fs.readFileSync(projectsFile, "utf-8");
 		for (const [from, to] of pathForms(oldPath, newPath)) {
 			if (from) content = content.split(from).join(to);
 		}
 		fs.writeFileSync(projectsFile, content, "utf-8");
-		gitCommit(projectsFile, `projects.md: reconcile ${name} path`, agentRoot);
+		gitCommit(projectsFile, `projects index: reconcile ${name} path`, agentRoot);
 	} catch {
 		// best-effort — the authoritative registry is already updated
 	}
@@ -1666,18 +1667,10 @@ Update this via: memory_write("system/human/preferences.md", content, descriptio
 `,
 			);
 
-			fs.writeFileSync(
-				path.join(sysDir, "projects.md"),
-				generateFrontmatter("Active projects index", ["projects"], 3) +
-					`# Active Projects
-
-List active projects here using [[wiki-links]]:
-- [[reference/my-project/status]]
-- [[reference/another-project/status]]
-
-Each [[link]] points to a semantic wiki-path under the memory root.
-`,
-			);
+			// #97: no project-index stub. The registry is the resolver and
+			// `discovery.ts` finds a root from cwd, so a placeholder index here would
+			// only go stale in silence. The listing is written when there is
+			// something to list.
 
 			fs.writeFileSync(
 				path.join(memoryRoot, "README.md"),
@@ -1693,7 +1686,6 @@ system/
 ├── human/
 │   ├── identity.md   # User background, drives
 │   └── preferences.md# Communication style, work patterns
-└── projects.md       # Active project index ([[links]])
 \`\`\`
 
 Edit these files directly or use \`memory_write()\` via the agent.
@@ -1701,6 +1693,9 @@ Edit these files directly or use \`memory_write()\` via the agent.
 ## Lazy (loaded on demand)
 
 \`\`\`
+knowledge/
+└── projects-active.md   # What is live right now, and where
+
 <project>/            # Semantic wiki-paths organized by project/domain
 ├── session/
 │   └── latest.md     # The state file, overwritten each session
