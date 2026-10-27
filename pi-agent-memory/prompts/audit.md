@@ -13,7 +13,9 @@ The measurement for this root is below. Read it, then propose. Nothing is applie
 
 ## Proposal shape
 
-Write `project_insights/audit-<YYYY-MM-DD>/proposals.md` with `memory_write`. One proposal per finding:
+Write `project_insights/audit-<YYYY-MM-DD>/proposals.md` with `write`, not `memory_write`. That tree is
+measurement rather than memory and is gitignored (San, 2026-10-27), so it is read back from disk. One
+proposal per finding:
 
     ## P1 — <one line, what changes>
     - **file:** <path>

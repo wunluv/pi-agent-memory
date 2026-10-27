@@ -14,7 +14,8 @@ San's approvals: {{APPROVED}}
 ## Baseline
 
 After the last proposal lands, re-run the measurement (`memory_audit` tool, same root, `write: true`) and write
-`project_insights/audit-<YYYY-MM-DD>/BASELINE.md`:
+`project_insights/audit-<YYYY-MM-DD>/BASELINE.md` with a plain `write`. That tree is gitignored, so the
+baseline is read back from disk by `/memory:audit-check` rather than from git:
 
     # Baseline <date>
     applied: P1, P3
