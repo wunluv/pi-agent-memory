@@ -1190,9 +1190,13 @@ export default function (pi: ExtensionAPI) {
 			"Use semantic wiki-paths like 'reference/heavenletters/status.md' — the path IS the subject taxonomy",
 			"Use tags for cross-cutting concerns that span multiple projects",
 		],
-		renderCall(args, theme) {
+		renderCall(args, theme, context) {
+			// pi streams tool arguments and renders this header before they arrive, with argsComplete
+			// false. Printing the fallback then made every write flash "<no path>" for a moment, so
+			// the placeholder now means what it says: a finished call that really omitted the path.
+			const shown = args.path ?? (context.argsComplete ? "<no path>" : "");
 			return new Text(
-				theme.fg("toolTitle", theme.bold("memory_write")) + " " + theme.fg("accent", args.path ?? "<no path>"),
+				theme.fg("toolTitle", theme.bold("memory_write")) + (shown ? " " + theme.fg("accent", shown) : ""),
 				0,
 				0,
 			);
