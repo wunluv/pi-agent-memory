@@ -298,4 +298,65 @@ assert.equal(cmdSignature("ssh mojah2 'git --git-dir=/x log'"), "ssh mojah2 Q");
 	assert.ok(!formatSummary(global).includes("by this project's sessions"));
 }
 
+// ─── #100: the ledger is the clock, once a project has one ─────────────────
+
+{
+	const s = makeSessions();
+	const alpha = tmp("ledgerclock");
+	const mem = path.join(alpha, ".memory");
+	gitInit(mem);
+	fs.writeFileSync(path.join(mem, "README.md"), "x\n");
+	commit(mem, "init", "2026-09-01");
+
+	// A friction endwork touches project_insights/audit. Before the ledger, that
+	// commit reset the memory audit clock (observed on d5).
+	fs.mkdirSync(path.join(mem, "project_insights", "audit"), { recursive: true });
+	fs.writeFileSync(path.join(mem, "project_insights", "audit", "INDEX.tsv"), "a\tb\n");
+	commit(mem, "friction endwork", "2026-10-20");
+
+	const noLedger = gatherAuditState({ git, root: mem, sessionsRoot: s.root, today: "2026-10-21" });
+	assert.equal(noLedger.clock, "audit", "with no ledger the audit directory still stands in");
+	assert.equal(noLedger.overdue.length, 0);
+
+	// Now a ledger with a check that has come due.
+	const installed = {
+		id: "alpha-2026-10-01-01",
+		opened: "2026-10-01",
+		source: "memory_audit",
+		class: "F2",
+		finding: "Inline scripts fail on quoting",
+		evidence: "STRAY-COMMANDS.tsv",
+		home: "AGENTS.md",
+		scope: "project",
+		artifact: "scratch-scripts",
+		status: "installed",
+		approved_by: "san",
+		installed_at: "2026-10-02",
+		commit: "abc1234",
+		check_metric: "failed_inline_script_calls",
+		check_definition: "bash results with isError=true",
+		check_after: "2026-11-01",
+		verdict: "",
+		verdict_date: "",
+	};
+	fs.mkdirSync(path.join(mem, "reference"), { recursive: true });
+	fs.writeFileSync(
+		path.join(mem, "reference", "ledger.md"),
+		"```tsv\n" + Object.keys(installed).join("\t") + "\n" + Object.values(installed).join("\t") + "\n```\n",
+	);
+	commit(mem, "learning: approve alpha-2026-10-01-01", "2026-10-25");
+
+	const clocked = gatherAuditState({ git, root: mem, sessionsRoot: s.root, today: "2026-10-26" });
+	assert.equal(clocked.clock, "ledger");
+	assert.equal(clocked.last, "2026-10-25", "the ledger's commit date wins over the friction commit");
+	assert.deepEqual(clocked.overdue, [], "not due yet");
+	assert.equal(clocked.due, false, "a fresh ledger that is not overdue is not due");
+
+	const late = gatherAuditState({ git, root: mem, sessionsRoot: s.root, today: "2026-11-05" });
+	assert.equal(late.due, true);
+	assert.match(late.reason, /1 check overdue \(alpha-2026-10-01-01\)/);
+	assert.match(renderAuditLine(late), /DUE/);
+	assert.match(dueNotice(late) ?? "", /pre-registered/);
+}
+
 console.log("audit tests passed");

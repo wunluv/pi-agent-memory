@@ -57,6 +57,10 @@ When the user types `/endwork`:
    - Files updated
    - Key decisions/outcomes from the session
    - Top priority for next session
+   - **The ledger's open rows, if any.** `memory_read("reference/ledger.md")` and report in one
+     line: rows sitting at `approved` with nothing installed, and installed rows whose `check_after`
+     has passed. These are the loop's unfinished work. If both are empty, say nothing — a quiet
+     ledger stays quiet.
    - Reminder: "Run super_sessions weekly for extraction."
 
 7. **Session root is cleared** automatically by the command.

@@ -69,7 +69,7 @@ everything else.
 | Session lifecycle | §8 |
 | Module map, repository layout | §9 |
 | Known gaps | §10 |
-| Maintenance loop (#92): audit → consolidate → audit-check | §12 |
+| Maintenance loop (#92) and the adoption ledger (#100) | §12 |
 | Gotchas | §13 |
 | Phase 2 extension points | `docs/IMPROVEMENT-DRAFTS.md` §6 |
 
@@ -79,6 +79,10 @@ everything else.
 - `memory_write` is always an atomic git commit.
 - Zone B `.memory/` repos are local git with an OPTIONAL private remote (mem server, issue #8) — never the project's public code repo (#17).
 - Canonical state files — `session/latest.md` (the state file: current state, decisions, open threads, next actions) and `wip.md` (resume state: exact commands, current blocker) — distinct purposes, never overlap. `reference/status.md` retired (#82); its durable content is `## Current state`. Authoritative text in `pi-agent-memory/prompts/system.md`.
+- **The adoption ledger** (`reference/ledger.md`, #100) records which finding became which change
+  and whether it fired. Append-only, one row per finding, written only by `/learning`
+  (`approve` / `install` / `close` / `list`). `/learning approve` refuses a row whose check is not
+  already written down. A finding that is already a row does not come back as a new proposal.
 - Session root cleared on `session_start` hook — no cross-session leakage. `~` in root params is expanded to the home directory.
 - The symlink is the deployment: `~/.pi/agent/extensions/pi-agent-memory` → this tree, so the working tree is live code and changes land on the next pi restart. It must exist before pi starts.
 

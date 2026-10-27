@@ -289,14 +289,22 @@ start had gone from a 2.0K mean in April 2026 to 8.0K in October, and one audit 
 month on one of twenty projects.
 
 ```
-memory_audit (free)  ──▶  /memory:audit      this project's numbers; proposals, applies nothing
+memory_audit (free)  ──▶  /memory:audit      this project's numbers; proposals.md + proposals.tsv
                               │ San approves by id
                               ▼
-                          /memory:consolidate  one memory_write per proposal + BASELINE.md
-                              │ ~10 sessions later
+                          /learning approve    opens a ledger row; refuses a row with no check
+                              │ the change is made
                               ▼
-                          /memory:audit-check  keep / kill / demote, written to CHECK.md
+                          /learning install    records artifact, commit, installed_at
+                              │ check_after arrives
+                              ▼
+                          /learning close      keep / rewrite / delete, with its verdict written
 ```
+
+The ledger (`reference/ledger.md`, #100) is the spine. Before it existed, nothing connected a
+finding to a change to a check: the 2026-10-19 proposals returned verbatim on 2026-10-23, an
+installed fix could not be listed for removal, and verification never ran once. One append-only
+table per project, written only by the four `/learning` verbs.
 
 - **Scope (#99, #100):** `/memory:audit` reports the project the session is standing in, plus the
   active agent's Zone A. It reads no other project's sessions and prints no portfolio figure. `/memory:audit-global` widens to every project and every agent. A scoped `never fetched`
@@ -307,8 +315,17 @@ memory_audit (free)  ──▶  /memory:audit      this project's numbers; propo
   signatures give the rediscovery count. No model calls, no new storage (#34's sidecar is
   redundant).
 - **Cadence:** derived, never stored. `audit.ts` reads the last commit touching
-  `project_insights/audit` and counts session files dated after it. Due at 20 sessions or 30
-  days; the notice appears in `memory_status` and as one line in the system prompt.
+  `reference/ledger.md` once a project has one (before that, `project_insights/audit` stands in)
+  and counts session files dated after it. Due at 20 sessions or 30 days, **or as soon as any
+  installed row's `check_after` has passed** — an overdue pre-registered check outranks both
+  thresholds, because someone already agreed that change would be measured by now. The notice
+  appears in `memory_status` and as one line in the system prompt.
+- **Why the clock moved (#100):** the friction loop writes into `project_insights/audit`, so
+  keying the memory clock on that directory let a friction `endwork` reset it. d5 reported "last
+  audit 2026-09-22", a friction commit. The ledger has one writer per meaning.
+- **Placement (#100):** `scope` defaults to `project`. A shared skill, the commons or the
+  always-loaded identity needs a global audit naming the pattern in two or more projects;
+  `~/.pi/org/insights/memory-system/fix-placement.md` holds the rule.
 - **Why a notice and not a cron:** a cron comments on nothing. The line reaches the model
   inside the turn, and the model is the one who can run the loop.
 
