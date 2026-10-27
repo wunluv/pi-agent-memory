@@ -26,6 +26,7 @@ import {
 import { searchSessionMessages } from "./session-search";
 import { extractWikiLinks, findBacklinks } from "./backlinks";
 import { loadSessionHandoff, SESSION_HANDOFF_PATH } from "./handoff";
+import { commitFile, commitReply, type CommitOutcome } from "./git-commit";
 import {
 	budgetSystemInjection,
 	DEFAULT_TOKEN_BUDGET,
@@ -615,17 +616,16 @@ function initGitRepo(repoPath: string): boolean {
 	return true;
 }
 
-/** Commit a file to git in the given memory root */
-function gitCommit(filePath: string, message: string, root: string): boolean {
-	const relPath = path.relative(root, filePath);
-	const add = git(["add", relPath], root);
-	if (add.code !== 0) return false;
-	const commit = git(["commit", "-m", message], root);
-	if (commit.code === 0) {
-		maybeSyncAfterCommit(root);
-		return true;
-	}
-	return false;
+/**
+ * Commit a file to git in the given memory root, and report what actually happened (#103).
+ *
+ * Returns the outcome instead of a boolean: a write that skipped its commit used to be
+ * indistinguishable from one that landed, because every caller discarded the result.
+ */
+function gitCommit(filePath: string, message: string, root: string): CommitOutcome {
+	const outcome = commitFile(git, filePath, message, root);
+	if (outcome.status === "committed") maybeSyncAfterCommit(root);
+	return outcome;
 }
 
 /** Push the active agent's Zone A repo after a successful commit (#8). */
@@ -1024,7 +1024,9 @@ function updateProjectsMdPath(name: string, oldPath: string, newPath: string): v
 			if (from) content = content.split(from).join(to);
 		}
 		fs.writeFileSync(projectsFile, content, "utf-8");
-		gitCommit(projectsFile, `projects index: reconcile ${name} path`, agentRoot);
+		// Best effort: the authoritative registry is already updated, so a failed commit here is
+		// tolerated rather than surfaced. `void` marks the discard as a decision, not an oversight (#103).
+		void gitCommit(projectsFile, `projects index: reconcile ${name} path`, agentRoot);
 	} catch {
 		// best-effort — the authoritative registry is already updated
 	}
@@ -1188,9 +1190,13 @@ export default function (pi: ExtensionAPI) {
 			"Use semantic wiki-paths like 'reference/heavenletters/status.md' — the path IS the subject taxonomy",
 			"Use tags for cross-cutting concerns that span multiple projects",
 		],
-		renderCall(args, theme) {
+		renderCall(args, theme, context) {
+			// pi streams tool arguments and renders this header before they arrive, with argsComplete
+			// false. Printing the fallback then made every write flash "<no path>" for a moment, so
+			// the placeholder now means what it says: a finished call that really omitted the path.
+			const shown = args.path ?? (context.argsComplete ? "<no path>" : "");
 			return new Text(
-				theme.fg("toolTitle", theme.bold("memory_write")) + " " + theme.fg("accent", args.path ?? "<no path>"),
+				theme.fg("toolTitle", theme.bold("memory_write")) + (shown ? " " + theme.fg("accent", shown) : ""),
 				0,
 				0,
 			);
@@ -1349,12 +1355,12 @@ export default function (pi: ExtensionAPI) {
 			const commitMsg = params.overrideReason
 				? `${targetPath}: ${params.description} (override: ${params.overrideReason})`
 				: `${targetPath}: ${params.description}`;
-			gitCommit(path.join(root, targetPath), commitMsg, repoRoot);
+			const outcome = gitCommit(path.join(root, targetPath), commitMsg, repoRoot);
 			// #70: remember which roots this session touched, for the handoff gate.
 			sessionWriteRoots.add(path.resolve(root));
 			return {
-				content: [{ type: "text", text: `\uD83D\uDCDD wrote ${targetPath} and committed.` }],
-				details: { path: targetPath, description: params.description, importance, tags },
+				content: [{ type: "text", text: commitReply(targetPath, outcome) }],
+				details: { path: targetPath, description: params.description, importance, tags, commit: outcome.status },
 			};
 		},
 	});
@@ -2062,32 +2068,41 @@ Browse with \`memory_tree()\`, read with \`memory_read()\`, write with \`memory_
 			const sessionLabel = `session-${now}`;
 			const targetDir = "_meta";
 			let written = 0;
+			const notCommitted: string[] = [];
+			const record = (relPath: string, outcome: CommitOutcome) => {
+				written++;
+				if (outcome.status === "failed") notCommitted.push(`${relPath}: ${outcome.detail}`);
+			};
 
 			if (observations.length > 0) {
 				const obsContent = observations.slice(0, 3).map((o, i) => `## Observation ${i + 1}\n\n${o.trim()}\n`).join("\n");
 				const obsPath = `${targetDir}/observations/${sessionLabel}.md`;
 				writeMemoryFile(obsPath, generateFrontmatter(`Session observations from ${now}`, ["observation", now], 3) + obsContent, root);
-				gitCommit(path.join(root, obsPath), `${obsPath}: Session observations from ${now}`, root);
-				written++;
+				record(obsPath, gitCommit(path.join(root, obsPath), `${obsPath}: Session observations from ${now}`, root));
 			}
 
 			if (decisions.length > 0) {
 				const decContent = decisions.slice(0, 2).map((d, i) => `## Decision ${i + 1}\n\n${d.trim()}\n`).join("\n");
 				const decPath = `${targetDir}/decisions/${sessionLabel}.md`;
 				writeMemoryFile(decPath, generateFrontmatter(`Decisions made on ${now}`, ["decision", now], 4) + decContent, root);
-				gitCommit(path.join(root, decPath), `${decPath}: Decisions from ${now}`, root);
-				written++;
+				record(decPath, gitCommit(path.join(root, decPath), `${decPath}: Decisions from ${now}`, root));
 			}
 
 			if (feedback.length > 0) {
 				const fbContent = feedback.slice(0, 2).map((f, i) => `## Feedback ${i + 1}\n\n${f.trim()}\n`).join("\n");
 				const fbPath = `${targetDir}/feedback/${sessionLabel}.md`;
 				writeMemoryFile(fbPath, generateFrontmatter(`User feedback from ${now}`, ["feedback", now], 5) + fbContent, root);
-				gitCommit(path.join(root, fbPath), `${fbPath}: Feedback from ${now}`, root);
-				written++;
+				record(fbPath, gitCommit(path.join(root, fbPath), `${fbPath}: Feedback from ${now}`, root));
 			}
 
-			ctx.ui.notify(`\u2705 Wrote ${written} memory file(s) from this session to global memory.`, "success");
+			if (notCommitted.length === 0) {
+				ctx.ui.notify(`\u2705 Wrote ${written} memory file(s) from this session to global memory.`, "success");
+			} else {
+				ctx.ui.notify(
+					`\u26A0\uFE0F Wrote ${written} memory file(s), but ${notCommitted.length} did not commit: ${notCommitted.join("; ")}`,
+					"warning",
+				);
+			}
 		},
 	});
 
